@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://cpc.csgrandeur.cn/outrank/rank?outrank_uuid=88998553-ce66-46ec-a062-1beb357d774c\" -H \"Accept: application/json\")",
+      "Bash(curl -s \"https://cpc.csgrandeur.cn/outrank/rank?outrank_uuid=88998553-ce66-46ec-a062-1beb357d774c\")",
+      "Bash(curl -s \"https://cpc.csgrandeur.cn/upload/outrank_attach/88998553-ce66-46ec-a062-1beb357d774c/rank.json\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(list\\(d.keys\\(\\)\\)\\); print\\('problems:', d.get\\('problem',d.get\\('problems','NO PROBLEMS KEY'\\)\\)[:2] if isinstance\\(d.get\\('problem',d.get\\('problems'\\)\\), list\\) else str\\(d.get\\('problem',d.get\\('problems',''\\)\\)\\)[:200]\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -s \"https://board.xcpcio.com/data/provincial-contest/2026/northeastern/run.json\")",
+      "Bash(curl -s \"https://board.xcpcio.com/data/provincial-contest/2026/northeastern/team.json\")",
+      "Bash(curl -s \"https://board.xcpcio.com/data/provincial-contest/2026/northeastern/organizations.json\")",
+      "Bash(curl -s \"https://board.xcpcio.com/data/provincial-contest/2026/northeastern/config.json\")",
+      "Bash(python3 -m http.server 8765)",
+      "Bash(open *)",
+      "Bash(curl -s http://localhost:8765/)",
+      "Bash(curl -s \"https://board.xcpcio.com/data/provincial-contest/2026/\")",
+      "Bash(curl -s -I \"https://board.xcpcio.com/data/provincial-contest/2026/northeastern/config.json\")",
+      "Bash(curl -s \"https://board.xcpcio.com/data/ccpc/12th/nanchang-invitational/config.json\")",
+      "Bash(curl -s \"https://board.xcpcio.com/data/ccpc/12th/nanchang-invitational/organizations.json\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(len\\(d\\), 'orgs'\\); print\\(d[:2]\\)\")"
+    ]
+  }
+}
