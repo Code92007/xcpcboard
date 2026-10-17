@@ -15,9 +15,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, urlsplit, unquote
+from urllib.parse import parse_qs, urlsplit, unquote, urlencode
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 ROOT = Path(__file__).resolve().parent
@@ -67,8 +68,16 @@ def board_source(value):
         return '', '', ''
     u = urlsplit(value)
     path = unquote(u.path).strip('/')
-    if u.scheme != 'https' or u.netloc != 'board.xcpcio.com' or u.fragment:
-        raise ValueError('请输入 https://board.xcpcio.com/ 下的榜单链接')
+    if u.scheme != 'https' or u.fragment:
+        raise ValueError('请输入 XCPCIO 或 rank.iccpc.cn 的 HTTPS 榜单链接')
+    if u.netloc == 'rank.iccpc.cn':
+        match = re.fullmatch(r'(?:r/|upload/outrank_attach/)([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:/rank\.json)?', path)
+        if not match:
+            raise ValueError('长春榜单链接应为 https://rank.iccpc.cn/r/榜单ID')
+        uid = match[1].lower()
+        return 'iccpc:' + uid, 'https://rank.iccpc.cn/r/' + uid, 'official'
+    if u.netloc != 'board.xcpcio.com':
+        raise ValueError('支持 board.xcpcio.com 和 rank.iccpc.cn 的榜单链接')
     if path.startswith('data/'):
         path = path[5:]
     path = re.sub(r'/config\.json$', '', path)
@@ -96,7 +105,76 @@ def room_id(value):
     raise ValueError('直播请填写 B 站房间号或 https://live.bilibili.com/房间号')
 
 
+def media_item(value):
+    """Normalize Bilibili identifiers; embed URLs are always constructed here."""
+    if not isinstance(value, dict) or not isinstance(value.get('url'), str):
+        raise ValueError('播放列表格式不正确')
+    text = value['url'].strip()
+    title = str(value.get('title', '')).strip()[:100]
+    page = 1
+    video = ''
+    room = ''
+    if text.isascii() and text.isdigit() and len(text) <= 16:
+        room = text
+    elif re.fullmatch(r'(?i)(BV[0-9a-z]{10}|av[0-9]{1,20})', text):
+        video = text
+    else:
+        u = urlsplit(text)
+        if u.scheme not in ['http', 'https'] or u.netloc not in ['live.bilibili.com', 'www.bilibili.com', 'bilibili.com', 'm.bilibili.com', 'player.bilibili.com'] or u.fragment:
+            raise ValueError('请填写 B 站直播间、视频完整链接或 BV/av 号')
+        query = parse_qs(u.query)
+        if u.netloc == 'live.bilibili.com':
+            room = room_id('https://live.bilibili.com' + u.path)
+        else:
+            if u.netloc == 'player.bilibili.com' and u.path == '/player.html':
+                video = query.get('bvid', [''])[0] or ('av' + query.get('aid', [''])[0])
+            else:
+                match = re.fullmatch(r'/video/((?i:BV[0-9a-z]{10}|av[0-9]{1,20}))/?', u.path)
+                if match:
+                    video = match[1]
+            p = query.get('p', ['1'])[0]
+            if not re.fullmatch(r'[0-9]{1,4}', p) or not 1 <= int(p) <= 1000:
+                raise ValueError('视频分 P 序号应在 1–1000 之间')
+            page = int(p)
+    if room:
+        url = 'https://live.bilibili.com/' + room
+        embed = 'https://www.bilibili.com/blackboard/live/live-activity-player.html?' + urlencode(dict(cid=room, quality=4, autoplay=0))
+        kind, fallback = 'live', 'B 站直播 · ' + room
+    elif re.fullmatch(r'(?i)BV[0-9a-z]{10}', video) or re.fullmatch(r'(?i)av[0-9]{1,20}', video):
+        video = ('BV' + video[2:]) if video[:2].upper() == 'BV' else ('av' + str(int(video[2:])))
+        url = 'https://www.bilibili.com/video/' + video + ('?p=' + str(page) if page != 1 else '')
+        params = {'bvid': video} if video.startswith('BV') else {'aid': video[2:]}
+        embed = 'https://player.bilibili.com/player.html?' + urlencode(dict(params, p=page, autoplay=0, poster=1))
+        kind, fallback = 'video', 'B 站视频 · ' + video + (' · P' + str(page) if page != 1 else '')
+    else:
+        raise ValueError('仅支持 B 站直播间和 BV/av 普通视频，请复制完整链接')
+    return dict(id='m' + hashlib.sha256(url.encode()).hexdigest()[:16], type=kind,
+                title=title or fallback, url=url, embed_url=embed)
+
+
+def station_media(station):
+    items = station.get('media')
+    if items is None:
+        items = [dict(url=station['room'])] if station.get('room') else []
+    return [media_item(item) for item in items]
+
+
+def clean_media(items):
+    if not isinstance(items, list) or len(items) > 20:
+        raise ValueError('每个赛站最多支持 20 个直播或视频')
+    result, seen = [], set()
+    for item in items:
+        clean = media_item(item)
+        if clean['id'] in seen:
+            raise ValueError('播放列表中有重复链接，同一视频不同分 P 可分别添加')
+        seen.add(clean['id'])
+        result.append({key: clean[key] for key in ['type', 'title', 'url']})
+    return result
+
+
 def build_board(raw, station, now=None):
+    if raw.get('provider') == 'iccpc':
+        return build_iccpc(raw, station, now)
     now = time.time() if now is None else now
     c = raw['config']
     start, end = epoch(c['start_time']), epoch(c['end_time'])
@@ -196,6 +274,123 @@ def build_board(raw, station, now=None):
                 total_runs=len(events), source=source_key(board_source(station['board_url'])[0]))
 
 
+def iccpc_raw(payload, path):
+    """Keep the public provider snapshot intact on disk, never infer hidden IDs."""
+    if not isinstance(payload, dict) or not isinstance(payload.get('ccpc_meta'), dict):
+        raise ValueError('CCPC 榜单元数据缺失，保留最近快照')
+    if not all(isinstance(payload.get(k), list) for k in ['team', 'problem', 'solution']):
+        raise ValueError('CCPC 榜单数据格式不正确')
+    return dict(provider='iccpc', path=path, config=payload['contest'], teams=payload['team'],
+                runs=payload['solution'], organizations=[], problems=payload['problem'],
+                ccpc_meta=payload['ccpc_meta'], time_context=payload.get('time_context', {}),
+                contest_group=payload.get('contest_group', []), fetched_at=time.time())
+
+
+def build_iccpc(raw, station, now=None):
+    now = time.time() if now is None else now
+    def instant(value):
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(raw.get('time_context', {}).get('wall_clock_timezone', 'Asia/Shanghai')))
+        return parsed.timestamp()
+    def tid(value):
+        text = str(value)
+        return text.split('_', 1)[1] if text.startswith('#cpc') and '_' in text else text
+    def cell():
+        return dict(state='none', wrong=0, pending=0, minute=None, first=False)
+    c, meta = raw['config'], raw['ccpc_meta']
+    start, end = instant(c['start_time']), instant(c['end_time'])
+    duration = end - start
+    if duration <= 0:
+        raise ValueError('比赛起止时间不正确')
+    freeze = max(0, min(duration, duration - float(c.get('frozen_minute') or 0) * 60,
+                        float(station.get('freeze_after', 4)) * 3600))
+    reveal = bool(station.get('reveal', False))
+    frozen = not reveal and freeze < duration and now >= start + freeze
+    show_all = meta.get('view') == 'referee' or bool(meta.get('frozen_show_all'))
+    teams, stats = {}, {}
+    for t in raw['teams']:
+        team_id = tid(t['team_id'])
+        kind = int(t.get('tkind') or 0)
+        groups = ['unofficial'] if kind == 2 else ['official']
+        if kind == 1:
+            groups.append('girl')
+        members = str(t.get('tmember') or '').split('、')
+        teams[team_id] = dict(id=team_id, name=str(t.get('name') or team_id), organization=str(t.get('school') or ''),
+            location=str(t.get('room') or ''), groups=groups, members=[m for m in members if m],
+            solved=0, penalty=0, last_solve=0)
+        stats[team_id] = {}
+    verdicts = {4:'AC', 5:'PE', 6:'WA', 7:'TLE', 8:'MLE', 9:'OLE', 10:'RE', 11:'CE'}
+    events, seen, accepted = [], set(), {}
+    ordered = sorted(raw['runs'], key=lambda r: (instant(r['in_date']), int(r['solution_id'])))
+    for r in ordered:
+        rid, team_id, pid = str(r['solution_id']), tid(r['team_id']), str(r['problem_id'])
+        sec = instant(r['in_date']) - start
+        if rid in seen or team_id not in teams or not 0 <= sec < duration or sec > now - start:
+            continue
+        seen.add(rid)
+        result = int(r['result'])
+        status = 'FROZEN' if result < 0 or (frozen and sec >= freeze) else verdicts.get(result, 'PENDING')
+        events.append(dict(id=rid, team_id=team_id, _pid=pid, status=status, second=sec))
+        p = stats[team_id].setdefault(pid, cell())
+        if p['state'] == 'ac':
+            continue
+        if status == 'AC':
+            p.update(state='ac', minute=math.floor(sec / 60), pending=0, _last=sec)
+            accepted.setdefault(pid, {})[team_id] = sec
+            teams[team_id]['solved'] += 1
+            teams[team_id]['penalty'] += math.floor(sec) + p['wrong'] * 1200
+        elif status in ['FROZEN', 'PENDING']:
+            p['pending'] += 1
+            p.update(state='frozen' if status == 'FROZEN' else 'pending', _last=sec)
+        elif 5 <= result <= 10:
+            p['wrong'] += 1
+            p['_last'] = sec
+            if not p['pending']:
+                p['state'] = 'wa'
+    threshold = int(meta.get('threshold') or min(50, max(1, math.floor(.2 * len(teams)))))
+    problem_map = {}
+    for p in raw['problems']:
+        num = p.get('num')
+        pid = str(p['problem_id'])
+        if num is not None and str(num).isdigit() and (show_all or len(accepted.get(pid, {})) >= threshold):
+            problem_map[pid] = dict(id=str(int(num)), label=chr(65 + int(num)), color=p.get('color') or '#e6e9ef',
+                                    accepted=len(accepted.get(pid, {})))
+    public_ids = sorted(problem_map, key=lambda pid: int(problem_map[pid]['id']))
+    for team_id, t in teams.items():
+        own = stats[team_id]
+        for pid in public_ids:
+            p = own.setdefault(pid, cell())
+            if p['state'] == 'ac':
+                p['first'] = p['_last'] == min(accepted[pid].values())
+        hidden = [p for pid, p in own.items() if pid not in problem_map and p['state'] != 'none'] if not show_all else []
+        hidden.sort(key=lambda p: (p['state'] != 'ac', p.get('_last', 0)))
+        # Neither provider IDs nor implied column numbers leave this adapter for hidden cells.
+        t['hidden_problems'] = [{k:v for k,v in p.items() if not k.startswith('_')} for p in hidden]
+        t['problems'] = [{k:v for k,v in own[pid].items() if not k.startswith('_')} for pid in public_ids]
+    for e in events:
+        pid = e.pop('_pid')
+        e['problem'] = problem_map[pid]['label'] if pid in problem_map else '?'
+    rows = sorted(teams.values(), key=lambda t: (-t['solved'], t['penalty'], t['id']))
+    for group in ['all', 'official', 'unofficial', 'girl']:
+        previous, rank = None, 0
+        for i, t in enumerate([t for t in rows if group == 'all' or group in t['groups']], 1):
+            score = (t['solved'], math.floor(t['penalty'] / 60))
+            if score != previous:
+                rank = i
+            t.setdefault('ranks', {})[group] = rank
+            previous = score
+    for t in rows:
+        t['penalty'] = math.floor(t['penalty'] / 60)
+    state = 'pending' if now < start else ('finished' if now >= end else ('frozen' if frozen else 'running'))
+    return dict(title=c.get('title', ''), start=start, end=end, freeze_at=start + freeze, frozen=frozen,
+                revealed=reveal, state=state, problems=[problem_map[pid] for pid in public_ids], teams=rows,
+                events=events[-800:], total_runs=len(events), source=source_key(raw['path']),
+                groups=dict(official='正式队伍', unofficial='打星队伍', girl='女队'),
+                problem_total=int(meta.get('n_problems') or len(raw['problems'])),
+                problem_reveal=dict(threshold=threshold, show_all=show_all, hidden=not show_all))
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ValueError('数据源返回了重定向')
@@ -208,7 +403,7 @@ class Fetcher:
         self.lock = threading.Lock()
 
     def get(self, url, ttl=0):
-        if not url.startswith('https://board.xcpcio.com/data/') and url != 'https://cpc.csgrandeur.cn/upload/outrank_attach/88998553-ce66-46ec-a062-1beb357d774c/rank.json':
+        if not url.startswith('https://board.xcpcio.com/data/') and not re.fullmatch(r'https://rank\.iccpc\.cn/upload/outrank_attach/[0-9a-f-]{36}/rank\.json', url) and url != 'https://cpc.csgrandeur.cn/upload/outrank_attach/88998553-ce66-46ec-a062-1beb357d774c/rank.json':
             raise ValueError('不支持的数据源')
         with self.lock:
             old = self.cache.get(url)
@@ -256,6 +451,7 @@ class Store:
         self.lock = threading.RLock()
         self.refresh_locks = {}
         self.raw = {}
+        self.payload_cache = {}
         self.health = {}
         self.fetcher = Fetcher()
         self.wakeup = threading.Event()
@@ -265,7 +461,7 @@ class Store:
         else:
             self.config = {'contests': [
                 dict(id='xian', title='ICPC 西安', board_url='https://board.xcpcio.com/icpc/51st/xian-warmup?group=official', room='', freeze_after=4, reveal=False, profiles={}),
-                dict(id='changchun', title='CCPC 长春', board_url='', room='', freeze_after=4, reveal=False, profiles={})]}
+                dict(id='changchun', title='CCPC 长春', board_url='https://rank.iccpc.cn/r/8a3a28e3-f6b3-4a58-b4ac-fa8039fb2c72', room='', freeze_after=4, reveal=False, profiles={})]}
             atomic_json(self.config_path, self.config)
         for station in self.config['contests']:
             path = board_source(station['board_url'])[0]
@@ -290,7 +486,7 @@ class Store:
     def public_station(self, station):
         path, _, group = board_source(station['board_url'])
         profile = station.get('profiles', {}).get(source_key(path), {})
-        return {**{k: v for k, v in station.items() if k != 'profiles'}, 'source': source_key(path),
+        return {**{k: v for k, v in station.items() if k != 'profiles'}, 'source': source_key(path), 'media': station_media(station),
                 'upstream_group': group, 'notes': profile.get('notes', {}),
                 'public_groups': profile.get('public_groups', []), 'default_group': profile.get('default_group', 'all')}
 
@@ -319,6 +515,21 @@ class Store:
                 station['board_url'] = board_source(data['board_url'])[1]
             if 'room' in data:
                 station['room'] = room_id(data['room'])
+                if 'media' in station and 'media' not in data:
+                    items = copy.deepcopy(station['media'])
+                    index = next((i for i, item in enumerate(items) if item['type'] == 'live'), None)
+                    if station['room']:
+                        item = dict(url=station['room'], title=items[index]['title'] if index is not None else '')
+                        if index is None:
+                            items.insert(0, item)
+                        else:
+                            items[index] = item
+                    elif index is not None:
+                        items.pop(index)
+                    station['media'] = clean_media(items)
+            if 'media' in data:
+                station['media'] = clean_media(data['media'])
+                station['room'] = next((item['url'].rsplit('/', 1)[-1] for item in station['media'] if item['type'] == 'live'), '')
             if 'freeze_after' in data:
                 value = float(data['freeze_after'])
                 if not math.isfinite(value) or not 0 <= value <= 24:
@@ -374,25 +585,28 @@ class Store:
         try:
             with self.lock:
                 self.health.setdefault(key, {})['checking'] = True
-            base = f'https://board.xcpcio.com/data/{path}/'
-            c = self.fetcher.get(base + 'config.json', ttl=60)
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                ft = pool.submit(self.fetcher.get, base + 'team.json', 60)
-                fr = pool.submit(self.fetcher.get, base + 'run.json')
-                org = c.get('organizations', [])
-                if isinstance(org, dict) and 'url' in org:
-                    # DataItem URLs must remain local to this contest directory.
-                    if not re.fullmatch(r'[A-Za-z0-9_-]+\.json', org['url']):
-                        raise ValueError('不支持的学校数据路径')
-                    org = self.fetcher.get(base + org['url'], ttl=300)
-                raw = dict(path=path, config=c, teams=ft.result(), runs=fr.result(), organizations=org, fetched_at=time.time())
+            if path.startswith('iccpc:'):
+                raw = iccpc_raw(self.fetcher.get('https://rank.iccpc.cn/upload/outrank_attach/' + path.split(':')[1] + '/rank.json'), path)
+            else:
+                base = f'https://board.xcpcio.com/data/{path}/'
+                c = self.fetcher.get(base + 'config.json', ttl=60)
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    ft = pool.submit(self.fetcher.get, base + 'team.json', 60)
+                    fr = pool.submit(self.fetcher.get, base + 'run.json')
+                    org = c.get('organizations', [])
+                    if isinstance(org, dict) and 'url' in org:
+                        # DataItem URLs must remain local to this contest directory.
+                        if not re.fullmatch(r'[A-Za-z0-9_-]+\.json', org['url']):
+                            raise ValueError('不支持的学校数据路径')
+                        org = self.fetcher.get(base + org['url'], ttl=300)
+                    raw = dict(path=path, config=c, teams=ft.result(), runs=fr.result(), organizations=org, fetched_at=time.time())
             with self.lock:
                 previous = self.raw.get(key)
             if previous and ((entries(previous['teams']) and not entries(raw['teams'])) or (entries(previous['runs']) and not entries(raw['runs']))):
                 raise ValueError('上游返回了空榜，保留最近一次完整快照')
             build_board(raw, station)  # Validate before replacing a known-good snapshot.
             target = self.directory / (key + '.json.gz')
-            changed = not previous or any(raw[k] != previous[k] for k in ['config', 'teams', 'runs', 'organizations'])
+            changed = not previous or {k:v for k,v in raw.items() if k != 'fetched_at'} != {k:v for k,v in previous.items() if k != 'fetched_at'}
             if changed or time.time() - (target.stat().st_mtime if target.exists() else 0) >= 60:
                 if target.exists() and changed:
                     atomic_json(self.directory / (key + '.previous.json.gz'), previous, compressed=True)
@@ -428,6 +642,20 @@ class Store:
                 list(pool.map(self.refresh, unique.values()))
             self.wakeup.wait(POLL)
 
+    def payload(self, sid, compressed=False):
+        # All visitors share scoring, serialization and gzip work. The one-second
+        # window also advances start/freeze boundaries when upstream stops pushing.
+        with self.lock:
+            s = self.station(sid)
+            key = source_key(board_source(s['board_url'])[0])
+            signature = (id(self.config), id(self.raw.get(key)), int(time.time()))
+            cached = self.payload_cache.get(sid)
+            if not cached or cached[0] != signature:
+                plain = json.dumps(self.board(sid), ensure_ascii=False, separators=(',', ':')).encode()
+                cached = (signature, plain, gzip.compress(plain, compresslevel=5))
+                self.payload_cache[sid] = cached
+            return cached[2 if compressed else 1]
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = 'XCPCBoard/2'
@@ -436,7 +664,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(args) > 1 and str(args[1]).startswith(('4', '5')):
             LOG.info('%s %s', self.address_string(), fmt % args)
 
-    def send(self, status, data, mime='application/json; charset=utf-8'):
+    def send(self, status, data, mime='application/json; charset=utf-8', encoded_gzip=False):
         body = json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode() if not isinstance(data, bytes) else data
         self.send_response(status)
         self.send_header('Content-Type', mime)
@@ -445,9 +673,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Referrer-Policy', 'strict-origin-when-cross-origin')
         self.send_header('X-Frame-Options', 'SAMEORIGIN')
         scripts = "'self' 'unsafe-inline'" if urlsplit(self.path).path in ['/legacy', '/legacy/'] else "'self'"
-        self.send_header('Content-Security-Policy', f"default-src 'self'; script-src {scripts}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src https://www.bilibili.com https://live.bilibili.com; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'")
-        if len(body) > 2048 and 'gzip' in self.headers.get('Accept-Encoding', ''):
-            body = gzip.compress(body)
+        self.send_header('Content-Security-Policy', f"default-src 'self'; script-src {scripts}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src https://www.bilibili.com https://live.bilibili.com https://player.bilibili.com; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'")
+        if encoded_gzip or (len(body) > 2048 and 'gzip' in self.headers.get('Accept-Encoding', '')):
+            if not encoded_gzip:
+                body = gzip.compress(body, compresslevel=5)
             self.send_header('Content-Encoding', 'gzip')
             self.send_header('Vary', 'Accept-Encoding')
         self.send_header('Content-Length', str(len(body)))
@@ -472,7 +701,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, {'contests': store.stations(), 'poll_seconds': POLL})
         elif re.fullmatch(r'/api/contests/[a-z0-9-]+', path):
             try:
-                self.send(200, store.board(path.split('/')[-1]))
+                compressed = 'gzip' in self.headers.get('Accept-Encoding', '')
+                self.send(200, store.payload(path.split('/')[-1], compressed), encoded_gzip=compressed)
             except StopIteration:
                 self.send(404, {'error': '赛站不存在'})
         elif path == '/api/admin/session':
@@ -531,13 +761,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send(500, {'error': '配置写入失败，请检查服务器磁盘'})
 
 
+class BoardHTTPServer(ThreadingHTTPServer):
+    request_queue_size = 128
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     store = Store(os.getenv('DATA_DIR', str(ROOT / 'data')))
     token = os.getenv('ADMIN_TOKEN', '')
     if len(token) < 20:
         raise SystemExit('Set ADMIN_TOKEN to a secret of at least 20 characters')
-    server = ThreadingHTTPServer((os.getenv('BIND', '127.0.0.1'), int(os.getenv('PORT', '8766'))), Handler)
+    server = BoardHTTPServer((os.getenv('BIND', '127.0.0.1'), int(os.getenv('PORT', '8766'))), Handler)
     server.store, server.token = store, token
     threading.Thread(target=store.worker, daemon=True).start()
     LOG.info('Listening on %s:%s; cache %s', *server.server_address, store.directory)

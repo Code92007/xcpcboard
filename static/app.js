@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const read = (storage, key, fallback) => { try { return JSON.parse(storage.getItem(key)) ?? fallback; } catch { return fallback; } };
 const save = (storage, key, value) => { try { storage.setItem(key, JSON.stringify(value)); return true; } catch { toast('浏览器存储不可用，本次修改仅在当前页面保留'); return false; } };
-const S = {stations:[], active:'', data:null, local:null, token:read(sessionStorage,'xcpc-admin',''), query:'', view:'all', rankGroup:'official', queue:[], seen:new Map(), backlog:[], paused:false, queueOnly:false, video:false, busy:false, source:'', online:true,queueInitialized:false,receivedAt:0};
+const S = {stations:[], active:'', data:null, local:null, token:read(sessionStorage,'xcpc-admin',''), query:'', view:'all', rankGroup:'official', queue:[], seen:new Map(), backlog:[], paused:false, queueOnly:false, video:true, mediaSelected:{}, busy:false, source:'', online:true,queueInitialized:false,receivedAt:0};
 let toastTimer, pollTimer, animationTimer;
 function toast(message) { $('toast').textContent=message; $('toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3500); }
 async function api(path, data, admin=false) {
@@ -47,7 +47,7 @@ function renderStations() {
   $('stationTabs').innerHTML=S.stations.map((s,i)=>`<button class="station-tab ${s.id===S.active?'active':''}" data-station="${esc(s.id)}" aria-current="${s.id===S.active?'page':'false'}"><span>${esc(s.title)}</span><small>${String(i+1).padStart(2,'0')}</small></button>`).join('');
 }
 async function switchStation(sid) {
-  S.active=sid; S.data=null; S.source=''; S.video=false; S.query=''; $('search').value='';
+  S.active=sid; S.data=null; S.source=''; S.video=read(localStorage,'xcpc-media-visibility',{})[sid]??true; S.query=''; $('search').value='';
   S.queue=[];S.seen.clear();S.backlog=[]; clearTimeout(animationTimer);
   history.replaceState(null,'','#'+sid); renderStations(); render(); await refresh();
 }
@@ -70,10 +70,10 @@ async function refresh() {
     if(S.view!=='all' && S.view!=='stars' && !currentGroup())S.view='all';
     if(data.board) {
       const events=data.board.events;
-      if(!S.queueInitialized) { S.queue=events.slice(-80).reverse(); events.forEach(e=>S.seen.set(e.id,e.status));S.queueInitialized=true; }
+      if(!S.queueInitialized) { S.queue=events.slice(-80).reverse(); events.forEach(e=>S.seen.set(e.id,eventFingerprint(e)));S.queueInitialized=true; }
       else {
         for(const e of events) {
-          if(S.seen.get(e.id)!==e.status) { S.seen.set(e.id,e.status); S.backlog=S.backlog.filter(x=>x.id!==e.id);S.backlog.push(e); }
+          if(S.seen.get(e.id)!==eventFingerprint(e)) { S.seen.set(e.id,eventFingerprint(e)); S.backlog=S.backlog.filter(x=>x.id!==e.id);S.backlog.push(e); }
         }
         // Bound a long-paused tab; the full latest standings remain available.
         if(S.backlog.length>800)S.backlog=S.backlog.slice(-800);
@@ -95,17 +95,19 @@ async function refresh() {
     render(); $('syncTop').textContent='连接中断 · 使用缓存'; $('syncTop').classList.add('offline');
   } finally { S.busy=false;if(sid!==S.active)refresh(); }
 }
+function eventFingerprint(e) { return e.status+'|'+e.problem; }
 function render() {renderStations();renderBanner();renderViews();renderTable();renderQueue();renderStatus();}
+function videoOpen() { return S.video && !!station()?.media?.length; }
 function renderBanner() {
   const b=board(),s=station();
   if(!s) { $('contestBanner').innerHTML='<div class="loading">正在连接赛站…</div>';return; }
   if(!b) {
-    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(s.title)}</h2><span class="status-badge">${s.board_url?'等待数据':'待公布榜单'}</span></div><div class="contest-meta">${s.board_url?'首次拉取中，成功后会自动显示。':'正赛链接公布后，在「管理赛站」填入链接即可开始同步。'}</div></div><button class="video-toggle" data-action="settings">配置赛站 ↗</button>`;
+    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(s.title)}</h2><span class="status-badge">${s.board_url?'等待数据':'待公布榜单'}</span></div><div class="contest-meta">${s.board_url?'首次拉取中，成功后会自动显示。':'正赛链接公布后，在「管理赛站」填入链接即可开始同步。'}</div></div><div class="contest-right"><button class="video-toggle" data-action="video">直播 / 视频</button><button class="video-toggle" data-action="settings">配置赛站 ↗</button></div>`;
   } else {
     const warmup=/warmup|热身/i.test(b.title+s.board_url);
     let status=b.state==='pending'?'尚未开始':b.state==='finished'?'比赛已结束':b.frozen?'已封榜':'比赛进行中';
     const freezeHours=((b.freeze_at-b.start)/3600).toFixed(2).replace(/\.?0+$/,'');
-    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(b.title)}</h2><span class="status-badge ${b.frozen?'frozen':''}">${status}${b.frozen&&b.state==='finished'?' · 封榜保留':''}</span>${warmup?'<span class="status-badge warmup">热身赛预览</span>':''}</div><div class="contest-meta"><span>${date(b.start)}（北京时间）</span><span>赛程 ${(b.end-b.start)/3600} 小时</span><span>${b.revealed?'已手动解封':`开赛 ${freezeHours}h 后封榜`}</span><span>${b.problems.length} 道题目</span></div></div><div class="contest-right"><div class="contest-clock"><strong id="contestClock"></strong><small id="clockLabel"></small></div><button class="video-toggle ${S.video?'active':''}" data-action="video">${S.video?'收起':'▹'} B 站直播</button></div>`;
+    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(b.title)}</h2><span class="status-badge ${b.frozen?'frozen':''}">${status}${b.frozen&&b.state==='finished'?' · 封榜保留':''}</span>${warmup?'<span class="status-badge warmup">热身赛预览</span>':''}</div><div class="contest-meta"><span>${date(b.start)}（北京时间）</span><span>赛程 ${(b.end-b.start)/3600} 小时</span><span>${b.revealed?'已手动解封':`开赛 ${freezeHours}h 后封榜`}</span><span>${b.problem_total??b.problems.length} 道题目${b.problem_reveal?` · 已揭晓 ${b.problems.length} 题`:''}</span></div></div><div class="contest-right"><div class="contest-clock"><strong id="contestClock"></strong><small id="clockLabel"></small></div><button class="video-toggle ${videoOpen()?'active':''}" data-action="video">${videoOpen()?'收起':'▹'} 直播 / 视频</button></div>`;
     updateClock();
   }
   $('sourceLink').href=s.board_url || 'https://board.xcpcio.com/';
@@ -120,14 +122,43 @@ function updateClock() {
   $('contestClock').textContent=clock(sec);$('clockLabel').textContent=label;
 }
 function renderVideo() {
-  const s=station(),panel=$('videoPanel');
-  panel.hidden=!S.video;
-  if(!S.video){panel.replaceChildren();return;}
-  const room=s?.room;
-  if(!room){panel.innerHTML='<div class="empty"><h3>这个赛站还没有配置直播间</h3><p>管理员可在「管理赛站」填入 B 站房间号。</p></div>';return;}
-  if(panel.dataset.room===room && panel.querySelector('iframe'))return;
-  panel.dataset.room=room;
-  panel.innerHTML=`<div class="video-header"><span>${esc(s.title)} · Bilibili Live</span><a href="https://live.bilibili.com/${esc(room)}" target="_blank" rel="noreferrer">播放受限时，打开直播间 ↗</a></div><iframe title="${esc(s.title)} B站直播" src="https://www.bilibili.com/blackboard/live/live-activity-player.html?cid=${esc(room)}&quality=4&autoplay=0" allow="autoplay; fullscreen; picture-in-picture; encrypted-media" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+  const s=station(),panel=$('videoPanel'),items=s?.media||[];
+  panel.hidden=!S.video||!items.length;
+  if(!S.video){panel.replaceChildren();delete panel.dataset.playlist;return;}
+  if(!items.length){panel.innerHTML='<div class="empty"><h3>这个赛站还没有配置直播或视频</h3><p>管理员可在「管理赛站」添加多个 B 站直播间或视频。</p><button data-action="settings">添加播放内容 ↗</button></div>';return;}
+  const signature=JSON.stringify([s.id,items]);
+  if(panel.dataset.playlist===signature && panel.querySelector('iframe'))return;
+  panel.dataset.playlist=signature;
+  panel.innerHTML=`<div class="video-header"><div><span class="media-kind"></span><strong id="mediaTitle"></strong></div><a id="mediaOriginal" target="_blank" rel="noreferrer">在 B 站打开 ↗</a></div><div class="media-viewport"><div class="media-track">${items.map(()=>'<div class="media-slide"></div>').join('')}</div></div><div class="media-controls"><button type="button" data-media-step="-1" aria-label="上一个直播或视频">‹</button><div class="media-swipe" tabindex="0" role="group" aria-label="左右滑动切换直播或视频"><span id="mediaCount"></span><small>${items.length>1?'左右滑动切换节目':'直播与视频 · 按需播放'}</small></div><button type="button" data-media-step="1" aria-label="下一个直播或视频">›</button></div><div class="media-playlist" aria-label="播放列表">${items.map((item,i)=>`<button type="button" data-media-index="${i}" aria-pressed="false"><span>${item.type==='live'?'直播':'视频'}</span>${esc(item.title)}</button>`).join('')}</div>`;
+  let start=null;
+  const swipe=panel.querySelector('.media-swipe');
+  swipe.onpointerdown=e=>{start={x:e.clientX,y:e.clientY};swipe.setPointerCapture(e.pointerId);};
+  swipe.onpointerup=e=>{if(start&&Math.abs(e.clientX-start.x)>45&&Math.abs(e.clientX-start.x)>Math.abs(e.clientY-start.y))selectMedia(Number(panel.dataset.index)+(e.clientX<start.x?1:-1));start=null;};
+  swipe.onpointercancel=()=>{start=null;};
+  panel.onkeydown=e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();selectMedia(Number(panel.dataset.index)+(e.key==='ArrowRight'?1:-1));}};
+  const selected=items.findIndex(item=>item.id===S.mediaSelected[S.active]);
+  selectMedia(selected<0?0:selected);
+}
+function selectMedia(index) {
+  const panel=$('videoPanel'),items=station()?.media||[];
+  if(!items.length)return;
+  index=(index+items.length)%items.length;
+  const item=items[index];
+  S.mediaSelected[S.active]=item.id;panel.dataset.index=index;
+  // Remove the old player before creating another so background audio stops.
+  for(const frame of panel.querySelectorAll('iframe'))frame.remove();
+  const frame=document.createElement('iframe');frame.title=item.title;frame.src=item.embed_url;
+  frame.allow='autoplay; fullscreen; picture-in-picture; encrypted-media';frame.allowFullscreen=true;
+  frame.referrerPolicy='strict-origin-when-cross-origin';
+  const slides=panel.querySelectorAll('.media-slide');
+  slides.forEach((slide,i)=>slide.setAttribute('aria-hidden',String(i!==index)));
+  slides[index].append(frame);
+  panel.querySelector('.media-track').style.transform=`translateX(-${index*100}%)`;
+  $('mediaTitle').textContent=item.title;$('mediaOriginal').href=item.url;
+  panel.querySelector('.media-kind').textContent=item.type==='live'?'BILIBILI LIVE':'BILIBILI VIDEO';
+  $('mediaCount').textContent=String(index+1).padStart(2,'0')+' / '+String(items.length).padStart(2,'0');
+  panel.querySelectorAll('[data-media-index]').forEach((button,i)=>{button.classList.toggle('active',i===index);button.setAttribute('aria-pressed',String(i===index));});
+  panel.querySelectorAll('[data-media-step]').forEach(button=>{button.disabled=items.length<2;});
 }
 function renderStatus() {
   const h=S.data?.health;
@@ -165,19 +196,23 @@ function renderTable() {
   const eligible=b.teams.filter(inRankGroup),rows=eligible.filter(t=>inView(t)&&matches(t));
   $('teamCount').textContent=rows.length+' / '+eligible.length;
   $('viewInfo').textContent=`${S.view==='all'?'全部队伍':S.view==='stars'?'我的关注':currentGroup()?.name || ''} · 排名基于${$('rankGroup').selectedOptions[0]?.textContent || '原榜'} · 罚时单位：分钟`;
-  wrap.innerHTML=`<table><thead><tr><th></th><th>排名</th><th class="note-col">群友备注</th><th class="team-col">队伍 / 学校</th><th>AC</th><th>罚时</th>${b.problems.map(p=>`<th><span class="prob-label" style="background:${safeColor(p.color)}">${esc(p.label)}</span><small>${eligible.filter(t=>t.problems[b.problems.indexOf(p)].state==='ac').length} AC</small></th>`).join('')}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell"><button class="star ${stars().includes(t.id)?'on':''}" data-star="${esc(t.id)}" title="${stars().includes(t.id)?'取消关注':'加入我的关注'}" aria-label="${stars().includes(t.id)?'取消关注':'关注'} ${esc(t.name)}">${stars().includes(t.id)?'★':'☆'}</button></td><td class="rank ${rank(t)<=3?'top':''}">${rankText(t)}</td><td class="note-cell"><button class="note-button ${note(t)?'':'blank'}" data-note="${esc(t.id)}" title="编辑群友备注">${note(t)?esc(note(t)):'＋ 添加备注'}</button></td><td class="team-cell" title="${esc(t.id+' · '+t.name+' · '+t.members.join(' / '))}"><div class="team-name">${esc(t.name)}${t.groups.includes('unofficial')?'<span class="unofficial">打星</span>':''}</div><div class="organization">${esc(t.organization || t.location || t.id)}</div></td><td class="solved">${t.solved}</td><td class="penalty">${minute(t.penalty)}</td>${t.problems.map(p=>`<td class="prob-cell">${problemCell(p)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${6+b.problems.length}"><div class="empty"><h3>${S.query?'没有找到匹配队伍':'这个分组还没有队伍'}</h3><p>${S.query?'试试队名、学校或群友备注。':'在全部队伍中点 ☆，或使用「关注分组」挑选队伍。'}</p></div></td></tr>`}</tbody></table>`;
+  const hidden=!!b.problem_reveal?.hidden;
+  const revealHint=hidden?` · 满 ${b.problem_reveal.threshold} 队通过后揭晓题号；右侧未揭晓题目仅在队内排列`:'';
+  $('viewInfo').textContent+=revealHint;
+  wrap.innerHTML=`<table><thead><tr><th></th><th>排名</th><th class="note-col">群友备注</th><th class="team-col">队伍 / 学校</th><th>AC</th><th>罚时</th>${b.problems.map(p=>`<th><span class="prob-label" style="background:${safeColor(p.color)}">${esc(p.label)}</span><small>${eligible.filter(t=>t.problems[b.problems.indexOf(p)].state==='ac').length} AC</small></th>`).join('')}${hidden?'<th class="hidden-heading">未揭晓题目<small>队内排列 · 无题号</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell"><button class="star ${stars().includes(t.id)?'on':''}" data-star="${esc(t.id)}" title="${stars().includes(t.id)?'取消关注':'加入我的关注'}" aria-label="${stars().includes(t.id)?'取消关注':'关注'} ${esc(t.name)}">${stars().includes(t.id)?'★':'☆'}</button></td><td class="rank ${rank(t)<=3?'top':''}">${rankText(t)}</td><td class="note-cell"><button class="note-button ${note(t)?'':'blank'}" data-note="${esc(t.id)}" title="编辑群友备注">${note(t)?esc(note(t)):'＋ 添加备注'}</button></td><td class="team-cell" title="${esc(t.id+' · '+t.name+' · '+t.members.join(' / '))}"><div class="team-name">${esc(t.name)}${t.groups.includes('unofficial')?'<span class="unofficial">打星</span>':''}</div><div class="organization">${esc(t.organization || t.location || t.id)}</div></td><td class="solved">${t.solved}</td><td class="penalty">${minute(t.penalty)}</td>${t.problems.map(p=>`<td class="prob-cell">${problemCell(p)}</td>`).join('')}${hidden?`<td class="hidden-cell"><div class="hidden-problems">${(t.hidden_problems||[]).map(p=>problemCell(p)).join('')||'<span class="help">尚无提交</span>'}</div></td>`:''}</tr>`).join('') || `<tr><td colspan="${6+b.problems.length+Number(hidden)}"><div class="empty"><h3>${S.query?'没有找到匹配队伍':'这个分组还没有队伍'}</h3><p>${S.query?'试试队名、学校或群友备注。':'在全部队伍中点 ☆，或使用「关注分组」挑选队伍。'}</p></div></td></tr>`}</tbody></table>`;
 }
 function statusClass(status) {return status==='AC'?'ac':['FROZEN','PENDING'].includes(status)?'pending':['WA','RE','TLE','MLE','OLE','RJ','JE'].includes(status)?'wa':'neutral';}
 function renderQueue(animated=false,newId='') {
   const b=board(),container=$('queue');
   if(!b){container.innerHTML='<div class="empty">等待比赛数据</div>';$('queueTotal').textContent='—';$('queueHint').textContent='最近提交 · 新提交会依次入队';return;}
   const teamMap=new Map(b.teams.map(t=>[t.id,t]));
-  const events=S.queue.filter(e=>{const t=teamMap.get(e.team_id);return t&&inRankGroup(t)&&(!S.queueOnly||inView(t));}).slice(0,80);
+  const latest=new Map(b.events.map(e=>[e.id,e]));
+  const events=S.queue.map(e=>latest.get(e.id)||e).filter(e=>{const t=teamMap.get(e.team_id);return t&&inRankGroup(t)&&(!S.queueOnly||inView(t));}).slice(0,80);
   const oldNodes=new Map([...container.querySelectorAll('[data-event]')].map(n=>[n.dataset.event,n]));
   const positions=animated?new Map([...oldNodes].map(([id,n])=>[id,n.getBoundingClientRect().top])):new Map();
   const nodes=events.map(e=>{
     const t=teamMap.get(e.team_id),n=oldNodes.get(e.id)||document.createElement('div');n.className='queue-row';n.dataset.event=e.id;
-    n.innerHTML=`<span class="q-rank ${rank(t)!=null&&rank(t)<=3?'top':''}" title="当前排名">${rankText(t)}</span><div class="q-team"><strong title="${esc(t.name)}">${note(t)?`<span class="q-note">${esc(note(t))}</span>`:''}${esc(t.name)}</strong><small title="${esc(t.organization)}">${esc(t.organization || t.id)} · ${t.solved} AC · ${clock(e.second)}</small></div><span class="q-problem">${esc(e.problem)}</span><span class="q-status ${statusClass(e.status)}" title="${esc(e.status)}">${e.status==='FROZEN'?'封榜':e.status==='PENDING'?'待判':esc(e.status)}</span>`;
+    n.innerHTML=`<span class="q-rank ${rank(t)!=null&&rank(t)<=3?'top':''}" title="当前排名">${rankText(t)}</span><div class="q-team"><strong title="${esc(t.name)}">${note(t)?`<span class="q-note">${esc(note(t))}</span>`:''}${esc(t.name)}</strong><small title="${esc(t.organization)}">${esc(t.organization || t.id)} · ${t.solved} AC · ${clock(e.second)}</small></div><span class="q-problem" title="${e.problem==='?'?'题号尚未揭晓':'题目 '+esc(e.problem)}">${esc(e.problem)}</span><span class="q-status ${statusClass(e.status)}" title="${esc(e.status)}">${e.status==='FROZEN'?'封榜':e.status==='PENDING'?'待判':esc(e.status)}</span>`;
     return n;
   });
   container.replaceChildren(...nodes);
@@ -208,20 +243,29 @@ async function adminSave(data,sid=S.active) {
 }
 function login(after=settings) {
   if(S.token){after();return;}
-  openModal('进入赛站管理','ADMIN ACCESS',`<form id="loginForm" class="form-stack"><div class="help">使用服务器上的管理密钥，配置所有访客可见的榜单、直播、公共分组和备注。</div><label class="field">管理密钥<input type="password" id="adminToken" autocomplete="current-password" required autofocus></label><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">进入管理</button></div></form>`);
+  openModal('进入赛站管理','ADMIN ACCESS',`<form id="loginForm" class="form-stack"><div class="help">使用服务器上的管理密钥，配置所有访客可见的榜单、直播或视频、公共分组和备注。</div><label class="field">管理密钥<input type="password" id="adminToken" autocomplete="current-password" required autofocus></label><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">进入管理</button></div></form>`);
   $('loginForm').onsubmit=async e=>{e.preventDefault();S.token=$('adminToken').value.trim();try{await api('/api/admin/session',null,true);save(sessionStorage,'xcpc-admin',S.token);after();renderStatus();}catch(error){errorMessage(error);}};
 }
 function settings(newStation=false) {
   if(!S.token){login(()=>settings(newStation));return;}
   const s=newStation?{id:'',title:'',board_url:'',room:'',freeze_after:4,reveal:false}:station();
-  openModal(newStation?'添加一个新赛站':'赛站设置','CONTEST SETTINGS',`<form id="settingsForm" class="form-stack"><div class="form-row">${newStation?'<label class="field">赛站 ID<input id="settingId" placeholder="例如 hangzhou-2027" pattern="[a-z0-9][a-z0-9-]{0,39}" required></label>':''}<label class="field">赛站名称<input id="settingTitle" value="${esc(s.title)}" required maxlength="80" placeholder="例如 ICPC 杭州"></label></div><label class="field">XCPCIO 榜单链接<input type="url" id="settingUrl" value="${esc(s.board_url)}" placeholder="https://board.xcpcio.com/icpc/51st/xian?group=official"><small>可随时替换链接；数据按完整榜单路径隔离缓存，分组和备注也按榜单保存。留空表示等待公布。</small></label><label class="field">B 站直播间<input id="settingRoom" value="${esc(s.room)}" placeholder="房间号或 https://live.bilibili.com/12345"><small>选填。访客可自行打开或收起播放器。</small></label><label class="field">开赛后几小时封榜<input type="number" id="settingFreeze" value="${s.freeze_after}" min="0" max="24" step="0.25" required><small>默认 4 小时；若原榜更早封榜，则跟随原榜。封榜后仍刷新公开提交。</small></label><label class="check-field"><input type="checkbox" id="settingReveal" ${s.reveal?'checked':''}><span>手动解封：显示上游已公开的最终结果<br><span class="help">官方滚榜完成后再开启；无法获取上游没有公开的数据。</span></span></label><div id="formError" class="form-error"></div><div class="modal-actions">${!newStation?'<button type="button" id="addStation" class="left">＋ 新增赛站</button>':''}<button type="button" id="adminLogout">退出管理</button><button class="primary" type="submit">保存设置</button></div></form>`);
+  openModal(newStation?'添加一个新赛站':'赛站设置','CONTEST SETTINGS',`<form id="settingsForm" class="form-stack"><div class="form-row">${newStation?'<label class="field">赛站 ID<input id="settingId" placeholder="例如 hangzhou-2027" pattern="[a-z0-9][a-z0-9-]{0,39}" required></label>':''}<label class="field">赛站名称<input id="settingTitle" value="${esc(s.title)}" required maxlength="80" placeholder="例如 ICPC 杭州"></label></div><label class="field">榜单链接（XCPCIO / CCPC）<input type="url" id="settingUrl" value="${esc(s.board_url)}" placeholder="https://board.xcpcio.com/icpc/51st/xian?group=official"><small>支持 board.xcpcio.com 和 rank.iccpc.cn/r/…；可随时替换链接。数据按榜单隔离缓存，分组和备注也按榜单保存。留空表示等待公布。</small></label><div class="field"><div class="group-heading"><h3>直播 / 视频播放列表</h3><button type="button" id="addMedia">＋ 添加内容</button></div><div id="mediaEditor"></div><small>选填，最多 20 项。支持直播间号、BV/av 号或 B 站完整链接；视频分 P 可用 ?p=2。访客可左右切换并自行打开或收起。</small></div><label class="field">开赛后几小时封榜<input type="number" id="settingFreeze" value="${s.freeze_after}" min="0" max="24" step="0.25" required><small>默认 4 小时；若原榜更早封榜，则跟随原榜。封榜后仍刷新公开提交。</small></label><label class="check-field"><input type="checkbox" id="settingReveal" ${s.reveal?'checked':''}><span>手动解封：显示上游已公开的最终结果<br><span class="help">官方滚榜完成后再开启；无法获取上游没有公开的数据。</span></span></label><div id="formError" class="form-error"></div><div class="modal-actions">${!newStation?'<button type="button" id="addStation" class="left">＋ 新增赛站</button>':''}<button type="button" id="adminLogout">退出管理</button><button class="primary" type="submit">保存设置</button></div></form>`);
+  renderMediaEditor(s.media||[]);
+  $('addMedia').onclick=()=>{const draft=readMediaEditor();if(draft.length>=20){toast('每站最多 20 项');return;}draft.push({title:'',url:''});renderMediaEditor(draft);$('mediaEditor').lastElementChild.querySelector('[data-media-url]').focus();};
+  $('mediaEditor').onclick=e=>{const button=e.target.closest('[data-media-edit]');if(!button)return;const draft=readMediaEditor(),index=Number(button.dataset.index);if(button.dataset.mediaEdit==='delete')draft.splice(index,1);else{const next=index+Number(button.dataset.mediaEdit);[draft[index],draft[next]]=[draft[next],draft[index]];}renderMediaEditor(draft);};
   if($('addStation'))$('addStation').onclick=()=>settings(true);
   $('adminLogout').onclick=()=>{S.token='';sessionStorage.removeItem('xcpc-admin');closeModal();renderStatus();toast('已退出管理');};
   $('settingsForm').onsubmit=async e=>{
     e.preventDefault();const button=e.submitter;button.disabled=true;
-    try {const sid=newStation?$('settingId').value.trim():S.active;await adminSave({title:$('settingTitle').value,board_url:$('settingUrl').value,room:$('settingRoom').value,freeze_after:Number($('settingFreeze').value),reveal:$('settingReveal').checked},sid);closeModal();toast('已保存，后台开始同步数据');if(sid!==S.active)await switchStation(sid);else await refresh();}
+    try {const sid=newStation?$('settingId').value.trim():S.active;await adminSave({title:$('settingTitle').value,board_url:$('settingUrl').value,media:readMediaEditor(),freeze_after:Number($('settingFreeze').value),reveal:$('settingReveal').checked},sid);closeModal();toast('已保存，后台开始同步数据');if(sid!==S.active)await switchStation(sid);else await refresh();}
     catch(error){errorMessage(error);}finally{button.disabled=false;}
   };
+}
+function readMediaEditor() {
+  return [...$('mediaEditor').querySelectorAll('.media-edit-row')].map(row=>({title:row.querySelector('[data-media-title]').value,url:row.querySelector('[data-media-url]').value}));
+}
+function renderMediaEditor(items) {
+  $('mediaEditor').innerHTML=items.map((item,i)=>`<div class="media-edit-row"><div class="media-edit-fields"><input data-media-title aria-label="节目 ${i+1} 名称" maxlength="100" placeholder="节目名称（可选）" value="${esc(item.title)}"><input data-media-url aria-label="节目 ${i+1} 链接" placeholder="直播间号 / BV号 / B站链接" value="${esc(item.url)}" required></div><div class="media-edit-actions"><button type="button" data-media-edit="-1" data-index="${i}" ${i===0?'disabled':''} aria-label="上移节目 ${i+1}">↑</button><button type="button" data-media-edit="1" data-index="${i}" ${i===items.length-1?'disabled':''} aria-label="下移节目 ${i+1}">↓</button><button type="button" data-media-edit="delete" data-index="${i}" aria-label="删除节目 ${i+1}">×</button></div></div>`).join('')||'<p class="help">尚未添加播放内容。</p>';
 }
 function editNote(tid) {
   const team=board()?.teams.find(t=>t.id===tid);if(!team)return;
@@ -280,7 +324,9 @@ document.addEventListener('click',e=>{
   if(e.target.closest('[data-close]'))closeModal();
   const action=e.target.closest('[data-action]')?.dataset.action;
   if(action==='settings')login();
-  if(action==='video'){S.video=!S.video;renderBanner();}
+  if(action==='video'){if(!station()?.media?.length){toast('当前赛站尚未添加播放内容，可在「管理赛站」配置');}else{S.video=!S.video;const visibility=read(localStorage,'xcpc-media-visibility',{});visibility[S.active]=S.video;save(localStorage,'xcpc-media-visibility',visibility);renderBanner();}}
+  const media=e.target.closest('[data-media-index]');if(media)selectMedia(Number(media.dataset.mediaIndex));
+  const step=e.target.closest('[data-media-step]');if(step)selectMedia(Number($('videoPanel').dataset.index)+Number(step.dataset.mediaStep));
   const star=e.target.closest('[data-star]');
   if(star&&S.local){const id=star.dataset.star;S.local.stars=stars().includes(id)?stars().filter(x=>x!==id):[...stars(),id];persist();renderViews();renderTable();if(S.queueOnly)renderQueue();}
   const n=e.target.closest('[data-note]');if(n)editNote(n.dataset.note);
@@ -290,7 +336,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();
 window.addEventListener('online',refresh);
 window.addEventListener('storage',e=>{if(e.key===prefKey()){S.local=read(localStorage,prefKey(),S.local);render();}});
 async function boot() {
-  try { S.active=decodeURIComponent(location.hash.slice(1));await refreshCatalog();await refresh(); }
+  try { S.active=decodeURIComponent(location.hash.slice(1));await refreshCatalog();S.video=read(localStorage,'xcpc-media-visibility',{})[S.active]??true;await refresh(); }
   catch(error) { $('contestBanner').innerHTML='<div class="empty">服务暂不可用，稍后将自动重试。</div>'; }
   pollTimer=setInterval(async()=>{if(document.hidden)return;try{await refreshCatalog();}catch{}await refresh();},15000);
   setInterval(updateClock,1000);
