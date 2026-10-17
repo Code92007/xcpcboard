@@ -2,3 +2,7 @@ xcpcboard.wannafly.cn {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8765
 }
+
+http://xcpcboard.wannafly.cn {
+    redir https://xcpcboard.wannafly.cn{uri} permanent
+}

@@ -2,6 +2,8 @@
 
 可复用的 XCPCIO 观赛看板，无前端构建依赖，后端只需要 Python 3.10+ 标准库。
 
+线上看板：<https://xcpcboard.wannafly.cn/>，HTTP 入口会自动跳转到 HTTPS。
+
 ## 使用
 
 ```sh
