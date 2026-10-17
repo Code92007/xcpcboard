@@ -265,7 +265,7 @@ function deleteGroup(scope,id) {
   openModal('删除分组','REMOVE GROUP',`<p class="help">删除「${esc(g.name)}」${scope==='public'?'将对所有访客生效':''}。队伍和备注会保留。</p><div class="modal-actions"><button id="cancelDelete">取消</button><button id="confirmDelete" class="danger">删除分组</button></div>`);
   $('cancelDelete').onclick=groups;$('confirmDelete').onclick=async()=>{try{if(scope==='public')await adminSave({source:S.source,public_groups:list.filter(x=>x.id!==id)});else S.local.groups=list.filter(x=>x.id!==id);if(S.view===(scope==='public'?'pub:':'local:')+id)S.view='all';persist();groups();renderViews();renderTable();renderQueue();}catch(error){toast(error.message);}};
 }
-$('stationTabs').onclick=e=>{const b=e.target.closest('[data-station]');if(b&&b.dataset.station!==S.active){if(S.busy){toast('正在同步，请稍后再切换');return;}switchStation(b.dataset.station);}};
+$('stationTabs').onclick=e=>{const b=e.target.closest('[data-station]');if(b&&b.dataset.station!==S.active)switchStation(b.dataset.station);};
 $('viewTabs').onclick=e=>{const b=e.target.closest('[data-view]');if(!b)return;S.view=b.dataset.view;persist();renderViews();renderTable();renderQueue();};
 $('search').oninput=e=>{S.query=e.target.value.trim();renderTable();};
 $('rankGroup').onchange=e=>{S.rankGroup=e.target.value;persist();renderTable();renderQueue();};
