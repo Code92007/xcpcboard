@@ -1,0 +1,24 @@
+[Unit]
+Description=XCPC spectator board with durable cache
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/xcpcboard
+EnvironmentFile=/root/xcpcboard/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /root/xcpcboard/server.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/root/xcpcboard/data
+PrivateTmp=true
+UMask=0077
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

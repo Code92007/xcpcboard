@@ -1,0 +1,6 @@
+data/
+.env
+__pycache__/
+*.pyc
+DEPLOYMENT-PRIVATE.md
+.DS_Store
