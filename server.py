@@ -227,6 +227,14 @@ def clean_media(items):
     return result
 
 
+def apply_medals(rows, cutoffs):
+    """Use the whole official standings, never a spectator's selected teams."""
+    for team in rows:
+        rank = team['ranks'].get('official')
+        team['medal'] = next((medal for medal in ['gold', 'silver', 'bronze']
+                              if rank and 'unofficial' not in team['groups'] and rank <= cutoffs.get(medal, 0)), '')
+
+
 def build_board(raw, station, now=None):
     if raw.get('provider') == 'iccpc':
         return build_iccpc(raw, station, now)
@@ -320,13 +328,24 @@ def build_board(raw, station, now=None):
                 rank = i
             t.setdefault('ranks', {})[group] = rank
             prev = score
+    medal = c.get('medal') or {}
+    cutoffs = {}
+    if medal == 'ccpc':
+        base = sum(t['solved'] > 0 for t in rows if 'official' in t['groups'] and 'unofficial' not in t['groups'])
+        cutoffs = {name: (base * pct + 99) // 100 for name, pct in [('gold', 10), ('silver', 30), ('bronze', 60)]}
+    elif isinstance(medal, dict):
+        cumulative = 0
+        for name in ['gold', 'silver', 'bronze']:
+            cumulative += max(0, int(medal.get('official', {}).get(name, 0)))
+            cutoffs[name] = cumulative
+    apply_medals(rows, cutoffs)
     for t in rows:
         t['penalty'] = round(t['penalty'] / 60, 2)
     state = 'pending' if now < start else ('finished' if now >= end else ('frozen' if frozen else 'running'))
     return dict(title=localized(c.get('contest_name')), start=start, end=end, freeze_at=start + freeze,
                 frozen=frozen, revealed=reveal, state=state, problems=problems, teams=rows,
                 events=sorted(events, key=lambda e: (e['second'], e['id']))[-800:], groups=c.get('group', {}),
-                total_runs=len(events), source=source_key(board_source(station['board_url'])[0]))
+                total_runs=len(events), medal_cutoffs=cutoffs, source=source_key(board_source(station['board_url'])[0]))
 
 
 def iccpc_raw(payload, path):
@@ -435,12 +454,29 @@ def build_iccpc(raw, station, now=None):
                 rank = i
             t.setdefault('ranks', {})[group] = rank
             previous = score
+    # ICCPC encodes individual award shares in base 1000. Its denominator can
+    # count AC teams, submitting teams (including CE), or all official teams.
+    mode = int(c.get('flg_award_base') or 0)
+    submitted = {e['team_id'] for e in events}
+    base = sum(mode == 2 or (t['id'] in submitted if mode == 1 else t['solved'] > 0)
+               for t in rows if 'official' in t['groups'] and 'unofficial' not in t['groups'])
+    ratio = int(c.get('award_ratio') or 30020010)
+    cutoffs, cumulative = {}, 0
+    for i, name in enumerate(['gold', 'silver', 'bronze']):
+        share = max(0, ratio // (1000 ** i) % 1000)
+        if int(c.get('flg_award_qty_mode') or 0) == 1:
+            cumulative = min(base, cumulative + share)
+            cutoffs[name] = cumulative
+        else:
+            cumulative += min(100, share)
+            cutoffs[name] = (base * cumulative + 99) // 100
+    apply_medals(rows, cutoffs)
     for t in rows:
         t['penalty'] = math.floor(t['penalty'] / 60)
     state = 'pending' if now < start else ('finished' if now >= end else ('frozen' if frozen else 'running'))
     return dict(title=c.get('title', ''), start=start, end=end, freeze_at=start + freeze, frozen=frozen,
                 revealed=reveal, state=state, problems=[problem_map[pid] for pid in public_ids], teams=rows,
-                events=events[-800:], total_runs=len(events), source=source_key(raw['path']),
+                events=events[-800:], total_runs=len(events), medal_cutoffs=cutoffs, source=source_key(raw['path']),
                 groups=dict(official='正式队伍', unofficial='打星队伍', girl='女队'),
                 problem_total=int(meta.get('n_problems') or len(raw['problems'])),
                 problem_reveal=dict(threshold=threshold, show_all=show_all, hidden=not show_all))

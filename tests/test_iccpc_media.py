@@ -32,6 +32,24 @@ def board(data, sec=20000, **options):
 
 
 class IccpcTests(unittest.TestCase):
+    def test_medals_use_configured_denominator_ratios_and_official_ranks(self):
+        d = fixture(21)
+        d['team'][1]['tkind'] = 1
+        d['team'][20]['tkind'] = 2
+        d['contest'].update(award_ratio=30020010, flg_award_base=1)
+        d['solution'] = [run(i, i, 'hidden', 60*(i+1), 4) for i in range(10)]
+        d['solution'] += [run(30, 10, 'hidden', 1, 11), run(31, 11, 'hidden', 2, 6), run(32, 20, 'hidden', 3, 4)]
+        b = board(d, 1000)
+        self.assertEqual(b['medal_cutoffs'], dict(gold=2, silver=4, bronze=8))
+        teams = {t['id']:t for t in b['teams']}
+        self.assertEqual([teams[str(i)]['medal'] for i in [0,1,2,4,8,20]], ['gold','gold','silver','bronze','',''])
+        self.assertEqual(teams['0']['ranks']['all'], 2)
+        for mode, limits in [(0, (1,3,6)), (2, (2,6,12))]:
+            d['contest']['flg_award_base'] = mode
+            self.assertEqual(tuple(board(d,1000)['medal_cutoffs'].values()), limits)
+        d['contest'].update(flg_award_base=1, flg_award_qty_mode=1, award_ratio=6004003)
+        self.assertEqual(board(d,1000)['medal_cutoffs'], dict(gold=3, silver=7, bronze=12))
+
     def test_public_prestart_empty_problem_list_is_valid_and_timezone_explicit(self):
         b=board(fixture(), -1)
         self.assertEqual((b['start'], b['state'], b['problem_total'], b['problems']), (START, 'pending', 13, []))

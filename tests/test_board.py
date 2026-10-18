@@ -25,6 +25,30 @@ def run(rid, tid, pid, second, status):
 
 
 class ScoringTests(unittest.TestCase):
+    def test_official_medals_follow_upstream_counts_and_keep_ties(self):
+        raw = fixture()
+        raw['teams'] += [dict(id='t3', name='三队', group=['official']), dict(id='t4', name='四队', group=['official'])]
+        raw['config']['medal'] = dict(official=dict(gold=1, silver=1, bronze=1))
+        raw['runs'] = [run('1', 'star', '0', 1, 'AC')] + [run(str(i+1), 't'+str(i), '0', 60*i, 'AC') for i in range(1, 5)]
+        b = server.build_board(raw, dict(board_url=URL), START+500)
+        self.assertEqual(b['medal_cutoffs'], dict(gold=1, silver=2, bronze=3))
+        teams = {t['id']: t for t in b['teams']}
+        self.assertEqual([teams[t]['medal'] for t in ['t1', 't2', 't3', 't4', 'star']], ['gold', 'silver', 'bronze', '', ''])
+        self.assertEqual(teams['t1']['ranks']['all'], 2)
+        raw['runs'][3]['timestamp'] = raw['runs'][2]['timestamp']
+        teams = {t['id']: t for t in server.build_board(raw, dict(board_url=URL), START+500)['teams']}
+        self.assertEqual((teams['t2']['medal'], teams['t3']['medal']), ('silver', 'silver'))
+        raw['config']['medal'] = {}
+        self.assertTrue(all(not t['medal'] for t in server.build_board(raw, dict(board_url=URL), START+500)['teams']))
+
+    def test_ccpc_medal_preset_counts_only_effective_official_teams(self):
+        raw = fixture()
+        raw['config']['medal'] = 'ccpc'
+        raw['runs'] = [run('1', 'star', '0', 1, 'AC'), run('2', 't1', '0', 60, 'AC')]
+        b = server.build_board(raw, dict(board_url=URL), START+500)
+        self.assertEqual(b['medal_cutoffs'], dict(gold=1, silver=1, bronze=1))
+        self.assertFalse(next(t for t in b['teams'] if t['id']=='star')['medal'])
+
     def test_modern_and_legacy_schema_units_and_ignored_verdicts(self):
         raw = fixture()
         raw['runs'] = [run('1', 't1', '0', 1, 'COMPILATION_ERROR'), run('2', 't1', '0', 2, 'PRESENTATION_ERROR'),
