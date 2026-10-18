@@ -91,6 +91,61 @@ def source_key(path):
     return hashlib.sha256(path.encode()).hexdigest()[:20]
 
 
+def warmup_path(path):
+    # Only this naming convention identifies the same contest, year and site.
+    return path + '-warmup' if path and not path.startswith('iccpc:') and not path.endswith('-warmup') else ''
+
+
+def matching_teams(old, new):
+    """Verify team identity before carrying preferences across scoreboard IDs."""
+    def identities(raw):
+        orgs = {str(o['id']): localized(o.get('name')) for o in entries(raw.get('organizations', []))}
+        return {str(t['id']): tuple(''.join(v.split()).casefold() for v in (
+            localized(t.get('name', t.get('team_name'))),
+            orgs.get(str(t.get('organization_id', '')), localized(t.get('organization', t.get('organization_id'))))))
+                for t in entries(raw['teams'])}
+    before, after = identities(old), identities(new)
+    by_identity, old_counts = {}, {}
+    for identity in before.values():
+        old_counts[identity] = old_counts.get(identity, 0) + 1
+    for tid, identity in after.items():
+        by_identity.setdefault(identity, []).append(tid)
+    result = {}
+    for tid, identity in before.items():
+        if not identity[0]:
+            continue
+        if after.get(tid) == identity:
+            result[tid] = tid
+        elif len(by_identity.get(identity, [])) == 1 and old_counts[identity] == 1:
+            result[tid] = by_identity[identity][0]
+    return result
+
+
+def merge_public_profile(target, previous, team_map):
+    """Keep current edits and merge verified members into existing named groups."""
+    notes = target.setdefault('notes', {})
+    for tid, note in previous.get('notes', {}).items():
+        if tid in team_map:
+            notes.setdefault(team_map[tid], note)
+    groups = target.setdefault('public_groups', [])
+    group_map = {}
+    for old in previous.get('public_groups', []):
+        members = [team_map[t] for t in old['teams'] if t in team_map]
+        if old['teams'] and not members:
+            continue
+        same_name = [g for g in groups if g['name'] == old['name']]
+        group = next((g for g in groups if g['id'] == old['id']), None)
+        if group is None and len(same_name) == 1:
+            group = same_name[0]
+        if group is None:
+            group = dict(id=old['id'], name=old['name'], teams=[])
+            groups.append(group)
+        group['teams'] = list(dict.fromkeys(group['teams'] + members))
+        group_map[old['id']] = group['id']
+    if 'default_group' not in target:
+        target['default_group'] = group_map.get(previous.get('default_group'), 'all')
+
+
 def room_id(value):
     value = str(value).strip()
     if not value:
@@ -452,6 +507,7 @@ class Store:
         self.refresh_locks = {}
         self.raw = {}
         self.payload_cache = {}
+        self.preference_cache = {}
         self.health = {}
         self.fetcher = Fetcher()
         self.wakeup = threading.Event()
@@ -467,6 +523,10 @@ class Store:
             path = board_source(station['board_url'])[0]
             if path:
                 self.load(path)
+                previous = warmup_path(path)
+                if previous:
+                    self.load(previous)
+                self.inherit_preferences(path)
 
     def load(self, path):
         key = source_key(path)
@@ -483,10 +543,57 @@ class Store:
             except (OSError, ValueError, KeyError, EOFError):
                 continue
 
+    def preference_sources(self, path):
+        previous = warmup_path(path)
+        if not previous:
+            return []
+        key, old_key = source_key(path), source_key(previous)
+        with self.lock:
+            old, new = self.raw.get(old_key), self.raw.get(key)
+            if not old or not new:
+                return []
+            cached = self.preference_cache.get(key)
+            if not cached or cached[0] is not old or cached[1] is not new:
+                cached = (old, new, matching_teams(old, new))
+                self.preference_cache[key] = cached
+            return [dict(source=old_key, team_map=cached[2])] if cached[2] else []
+
+    def inherit_preferences(self, path):
+        with self.lock:
+            links = self.preference_sources(path)
+            if not links:
+                return
+            config = copy.deepcopy(self.config)
+            changed = False
+            for station in config['contests']:
+                if board_source(station['board_url'])[0] != path:
+                    continue
+                profiles = station.setdefault('profiles', {})
+                target = profiles.setdefault(source_key(path), {})
+                for link in links:
+                    previous = profiles.get(link['source'], {})
+                    if link['source'] in target.get('inherited_sources', []) or not (previous.get('notes') or previous.get('public_groups')):
+                        continue
+                    merge_public_profile(target, previous, link['team_map'])
+                    target.setdefault('inherited_sources', []).append(link['source'])
+                    changed = True
+            if changed:
+                atomic_json(self.config_path, config)
+                self.config = config
+
     def public_station(self, station):
         path, _, group = board_source(station['board_url'])
         profile = station.get('profiles', {}).get(source_key(path), {})
+        links = copy.deepcopy(self.preference_sources(path))
+        for link in links:
+            previous = station.get('profiles', {}).get(link['source'], {})
+            link['public_group_map'] = {}
+            for old in previous.get('public_groups', []):
+                matches = [g for g in profile.get('public_groups', []) if g['id'] == old['id'] or g['name'] == old['name']]
+                if len(matches) == 1:
+                    link['public_group_map'][old['id']] = matches[0]['id']
         return {**{k: v for k, v in station.items() if k != 'profiles'}, 'source': source_key(path), 'media': station_media(station),
+                'preference_sources': links,
                 'upstream_group': group, 'notes': profile.get('notes', {}),
                 'public_groups': profile.get('public_groups', []), 'default_group': profile.get('default_group', 'all')}
 
@@ -570,8 +677,11 @@ class Store:
             atomic_json(self.config_path, config)
             self.config = config
             self.load(path) if path else None
+            if warmup_path(path):
+                self.load(warmup_path(path))
+            self.inherit_preferences(path)
         self.wakeup.set()
-        return self.public_station(station)
+        return self.public_station(self.station(sid))
 
     def refresh(self, station):
         path = board_source(station['board_url'])[0]
@@ -614,6 +724,7 @@ class Store:
             with self.lock:
                 self.raw[key] = raw
                 self.health[key] = dict(last_success=raw['fetched_at'], last_attempt=time.time(), error='', checking=False)
+                self.inherit_preferences(path)
         except Exception as exc:
             LOG.warning('Refresh %s failed: %s', path, exc)
             with self.lock:
@@ -712,7 +823,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, {'ok': True, 'contests': len(store.stations()), 'time': time.time()})
         elif path == '/' or path == '/index.html':
             self.send(200, (ROOT / 'index.html').read_bytes(), 'text/html; charset=utf-8')
-        elif path in ['/static/app.js', '/static/style.css']:
+        elif path in ['/static/app.js', '/static/preferences.js', '/static/style.css']:
             self.send(200, (ROOT / path.lstrip('/')).read_bytes(), 'application/javascript; charset=utf-8' if path.endswith('.js') else 'text/css; charset=utf-8')
         elif path in ['/legacy', '/legacy/']:
             self.send(200, (ROOT / 'legacy/index.html').read_bytes(), 'text/html; charset=utf-8')

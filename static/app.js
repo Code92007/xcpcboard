@@ -4,7 +4,7 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const read = (storage, key, fallback) => { try { return JSON.parse(storage.getItem(key)) ?? fallback; } catch { return fallback; } };
 const save = (storage, key, value) => { try { storage.setItem(key, JSON.stringify(value)); return true; } catch { toast('浏览器存储不可用，本次修改仅在当前页面保留'); return false; } };
 const S = {stations:[], active:'', data:null, local:null, token:read(sessionStorage,'xcpc-admin',''), query:'', view:'all', rankGroup:'official', queue:[], seen:new Map(), backlog:[], paused:false, queueOnly:false, video:true, mediaSelected:{}, busy:false, source:'', online:true,queueInitialized:false,receivedAt:0};
-let toastTimer, pollTimer, animationTimer;
+let toastTimer, pollTimer, animationTimer, preferenceSignature;
 function toast(message) { $('toast').textContent=message; $('toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3500); }
 async function api(path, data, admin=false) {
   const headers = {};
@@ -60,12 +60,13 @@ async function refresh() {
     S.data=data; S.online=true;S.receivedAt=Date.now()/1000;
     const catalogIndex=S.stations.findIndex(s=>s.id===sid);if(catalogIndex>=0)S.stations[catalogIndex]=data.station;
     const source=data.station.source;
-    if(source!==S.source) {
-      S.source=source; S.local=read(localStorage,prefKey(),{stars:[],groups:[],notes:{}});
-      if(!Array.isArray(S.local.stars)||!Array.isArray(S.local.groups)||typeof S.local.notes!=='object')S.local={stars:[],groups:[],notes:{}};
+    const sourceChanged=source!==S.source, signature=JSON.stringify([source,data.station.preference_sources]);
+    if(sourceChanged || signature!==preferenceSignature) {
+      S.source=source; S.local=XCPCPreferences.load(localStorage,data.station);preferenceSignature=signature;
       S.view=S.local.view || (data.station.default_group!=='all'?'pub:'+data.station.default_group:'all');
       S.rankGroup=S.local.rankGroup || data.station.upstream_group || 'official';
-      S.queueOnly=!!S.local.queueOnly; S.queue=[];S.seen.clear();S.backlog=[];S.queueInitialized=false;
+      S.queueOnly=!!S.local.queueOnly;
+      if(sourceChanged){S.queue=[];S.seen.clear();S.backlog=[];S.queueInitialized=false;}
     }
     if(S.view!=='all' && S.view!=='stars' && !currentGroup())S.view='all';
     if(data.board) {
@@ -87,7 +88,7 @@ async function refresh() {
     if(!S.data) {
       const cached=read(localStorage,'xcpc-snapshot:'+sid,null);
       if(cached) {
-        S.data=cached;S.source=cached.station.source;S.local=read(localStorage,prefKey(),{stars:[],groups:[],notes:{}});
+        S.data=cached;S.source=cached.station.source;S.local=XCPCPreferences.load(localStorage,cached.station);
         S.view=S.local.view||'all';S.rankGroup=S.local.rankGroup||cached.station.upstream_group||'official';
         S.queue=cached.board?.events.slice(-80).reverse() || [];
       }
@@ -249,7 +250,7 @@ function login(after=settings) {
 function settings(newStation=false) {
   if(!S.token){login(()=>settings(newStation));return;}
   const s=newStation?{id:'',title:'',board_url:'',room:'',freeze_after:4,reveal:false}:station();
-  openModal(newStation?'添加一个新赛站':'赛站设置','CONTEST SETTINGS',`<form id="settingsForm" class="form-stack"><div class="form-row">${newStation?'<label class="field">赛站 ID<input id="settingId" placeholder="例如 hangzhou-2027" pattern="[a-z0-9][a-z0-9-]{0,39}" required></label>':''}<label class="field">赛站名称<input id="settingTitle" value="${esc(s.title)}" required maxlength="80" placeholder="例如 ICPC 杭州"></label></div><label class="field">榜单链接（XCPCIO / CCPC）<input type="url" id="settingUrl" value="${esc(s.board_url)}" placeholder="https://board.xcpcio.com/icpc/51st/xian?group=official"><small>支持 board.xcpcio.com 和 rank.iccpc.cn/r/…；可随时替换链接。数据按榜单隔离缓存，分组和备注也按榜单保存。留空表示等待公布。</small></label><div class="field"><div class="group-heading"><h3>直播 / 视频播放列表</h3><button type="button" id="addMedia">＋ 添加内容</button></div><div id="mediaEditor"></div><small>选填，最多 20 项。支持直播间号、BV/av 号或 B 站完整链接；视频分 P 可用 ?p=2。访客可左右切换并自行打开或收起。</small></div><label class="field">开赛后几小时封榜<input type="number" id="settingFreeze" value="${s.freeze_after}" min="0" max="24" step="0.25" required><small>默认 4 小时；若原榜更早封榜，则跟随原榜。封榜后仍刷新公开提交。</small></label><label class="check-field"><input type="checkbox" id="settingReveal" ${s.reveal?'checked':''}><span>手动解封：显示上游已公开的最终结果<br><span class="help">官方滚榜完成后再开启；无法获取上游没有公开的数据。</span></span></label><div id="formError" class="form-error"></div><div class="modal-actions">${!newStation?'<button type="button" id="addStation" class="left">＋ 新增赛站</button>':''}<button type="button" id="adminLogout">退出管理</button><button class="primary" type="submit">保存设置</button></div></form>`);
+  openModal(newStation?'添加一个新赛站':'赛站设置','CONTEST SETTINGS',`<form id="settingsForm" class="form-stack"><div class="form-row">${newStation?'<label class="field">赛站 ID<input id="settingId" placeholder="例如 hangzhou-2027" pattern="[a-z0-9][a-z0-9-]{0,39}" required></label>':''}<label class="field">赛站名称<input id="settingTitle" value="${esc(s.title)}" required maxlength="80" placeholder="例如 ICPC 杭州"></label></div><label class="field">榜单链接（XCPCIO / CCPC）<input type="url" id="settingUrl" value="${esc(s.board_url)}" placeholder="https://board.xcpcio.com/icpc/51st/xian?group=official"><small>支持 board.xcpcio.com 和 rank.iccpc.cn/r/…；可随时替换链接。同一赛事从热身赛切到正式赛时，核对队伍后自动继承分组、备注和个人关注。留空表示等待公布。</small></label><div class="field"><div class="group-heading"><h3>直播 / 视频播放列表</h3><button type="button" id="addMedia">＋ 添加内容</button></div><div id="mediaEditor"></div><small>选填，最多 20 项。支持直播间号、BV/av 号或 B 站完整链接；视频分 P 可用 ?p=2。访客可左右切换并自行打开或收起。</small></div><label class="field">开赛后几小时封榜<input type="number" id="settingFreeze" value="${s.freeze_after}" min="0" max="24" step="0.25" required><small>默认 4 小时；若原榜更早封榜，则跟随原榜。封榜后仍刷新公开提交。</small></label><label class="check-field"><input type="checkbox" id="settingReveal" ${s.reveal?'checked':''}><span>手动解封：显示上游已公开的最终结果<br><span class="help">官方滚榜完成后再开启；无法获取上游没有公开的数据。</span></span></label><div id="formError" class="form-error"></div><div class="modal-actions">${!newStation?'<button type="button" id="addStation" class="left">＋ 新增赛站</button>':''}<button type="button" id="adminLogout">退出管理</button><button class="primary" type="submit">保存设置</button></div></form>`);
   renderMediaEditor(s.media||[]);
   $('addMedia').onclick=()=>{const draft=readMediaEditor();if(draft.length>=20){toast('每站最多 20 项');return;}draft.push({title:'',url:''});renderMediaEditor(draft);$('mediaEditor').lastElementChild.querySelector('[data-media-url]').focus();};
   $('mediaEditor').onclick=e=>{const button=e.target.closest('[data-media-edit]');if(!button)return;const draft=readMediaEditor(),index=Number(button.dataset.index);if(button.dataset.mediaEdit==='delete')draft.splice(index,1);else{const next=index+Number(button.dataset.mediaEdit);[draft[index],draft[next]]=[draft[next],draft[index]];}renderMediaEditor(draft);};
@@ -334,7 +335,7 @@ document.addEventListener('click',e=>{
 document.addEventListener('keydown',e=>{if(e.key==='/'&&!$('modal').open&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();$('search').focus();}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
 window.addEventListener('online',refresh);
-window.addEventListener('storage',e=>{if(e.key===prefKey()){S.local=read(localStorage,prefKey(),S.local);render();}});
+window.addEventListener('storage',e=>{if(e.key===prefKey()){S.local=XCPCPreferences.load(localStorage,station());render();}});
 async function boot() {
   try { S.active=decodeURIComponent(location.hash.slice(1));await refreshCatalog();S.video=read(localStorage,'xcpc-media-visibility',{})[S.active]??true;await refresh(); }
   catch(error) { $('contestBanner').innerHTML='<div class="empty">服务暂不可用，稍后将自动重试。</div>'; }
