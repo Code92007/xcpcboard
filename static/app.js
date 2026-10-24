@@ -293,6 +293,54 @@ function groups() {
     if(el.id==='resetPublicDefault'){try{await adminSave({source:S.source,default_group:'all'});groups();toast('公共默认视图已恢复为全部队伍');}catch(error){toast(error.message);}}
   };
 }
+function importStars() {
+  if(!board() || !S.local){toast('榜单加载后可导入关注');return;}
+  const seen=new Set([S.source]);
+  const sources=S.stations.filter(s=>{
+    if(!s.board_url || seen.has(s.source))return false;
+    seen.add(s.source);return true;
+  }).filter(s=>XCPCPreferences.load(localStorage,s).stars.length);
+  if(!sources.length){
+    openModal('导入关注','MY TEAMS','<div class="empty">当前浏览器还没有其他赛站的个人关注。</div><div class="modal-actions"><button type="button" data-close>关闭</button></div>');
+    return;
+  }
+  const targetId=S.active,targetSource=S.source;
+  openModal('导入关注','MY TEAMS',`<form id="importForm"><label class="field">来源赛站<select id="importSource">${sources.map(s=>`<option value="${esc(s.id)}">${esc(s.title)}</option>`).join('')}</select></label><p class="help" id="importStatus" role="status"></p><div class="group-picker" id="importPreview"></div><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button type="submit" class="primary" id="importSave" disabled>导入关注</button></div></form>`);
+  let matches=[],selected=new Set(),requestId=0;
+  const valid=()=>S.active===targetId && S.source===targetSource && $('modal').open && !!$('importSource');
+  const update=()=>{$('importSave').disabled=!selected.size;$('importSave').textContent=`导入 ${selected.size} 支队伍`;};
+  const loadSource=async()=>{
+    const sid=$('importSource').value,source=sources.find(s=>s.id===sid),request=++requestId;
+    matches=[];selected.clear();update();
+    $('importStatus').textContent='正在读取来源榜单…';$('importPreview').replaceChildren();$('formError').textContent='';
+    try {
+      let data;
+      try {data=await api('/api/contests/'+sid);}
+      catch(error){data=read(localStorage,'xcpc-snapshot:'+sid,null);if(!data)throw error;}
+      if(!valid() || request!==requestId)return;
+      if(!data.board || data.station?.source!==source.source)throw Error('来源赛站的榜单暂不可用');
+      const saved=XCPCPreferences.load(localStorage,data.station);
+      const result=XCPCPreferences.matchStars(saved.stars,data.board.teams,board().teams,stars());
+      matches=result.matches;selected=new Set(matches.map(match=>match.target.id));
+      const counts=[`可导入 ${matches.length} 支`,result.alreadyFollowed?`已关注 ${result.alreadyFollowed} 支`:'',result.ambiguous?`重名跳过 ${result.ambiguous} 支`:'',result.unmatched?`未匹配 ${result.unmatched} 支`:''].filter(Boolean);
+      $('importStatus').textContent=counts.join(' · ');
+      $('importPreview').innerHTML=matches.map(({source,target})=>`<label class="pick-row"><input type="checkbox" data-import="${esc(target.id)}" checked><span>${esc(target.name)}<small>原：${esc(source.organization||'未知学校')} · 本场：${esc(target.organization||'未知学校')}</small></span></label>`).join('')||'<div class="empty">没有可导入的队伍</div>';
+      update();
+    } catch(error) {
+      if(!valid() || request!==requestId)return;
+      $('importStatus').textContent='';$('importPreview').innerHTML='<div class="empty">无法读取来源榜单</div>';
+      $('formError').textContent=error.message;
+    }
+  };
+  $('importSource').onchange=loadSource;
+  $('importPreview').onchange=e=>{const id=e.target.dataset.import;if(!id)return;e.target.checked?selected.add(id):selected.delete(id);update();};
+  $('importForm').onsubmit=e=>{
+    e.preventDefault();if(!valid() || !selected.size)return;
+    S.local.stars=[...new Set([...stars(),...selected])];S.view='stars';persist();closeModal();
+    renderViews();renderTable();renderQueue();toast(`已导入 ${selected.size} 支队伍`);
+  };
+  loadSource();
+}
 function editGroup(scope,id='') {
   $('modalBody').onclick=null;
   const list=scope==='public'?station().public_groups:S.local.groups;
@@ -334,7 +382,7 @@ $('search').oninput=e=>{S.query=e.target.value.trim();renderTable();};
 $('rankGroup').onchange=e=>{S.rankGroup=e.target.value;persist();renderTable();renderQueue();};
 $('queueOnlyView').onchange=e=>{S.queueOnly=e.target.checked;persist();renderQueue();};
 $('queuePause').onclick=()=>{S.paused=!S.paused;renderQueue();if(!S.paused)drainQueue();};
-$('manageButton').onclick=()=>login();$('groupButton').onclick=groups;
+$('manageButton').onclick=()=>login();$('groupButton').onclick=groups;$('importButton').onclick=importStars;
 $('refreshButton').onclick=async()=>{await refresh();toast('已读取服务器最新缓存');};
 $('closeModal').onclick=closeModal;
 $('modal').onclick=e=>{if(e.target===$('modal')){const r=$('modal').getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal();}};

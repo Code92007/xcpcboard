@@ -107,6 +107,20 @@ class PersistenceTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_chengdu_is_added_to_existing_stations_once(self):
+        self.assertEqual(server.board_source(self.store.station('chengdu')['board_url'])[0],
+                         'icpc/51st/chengdu-warmup')
+        previous = copy.deepcopy(self.store.config)
+        previous['contests'] = previous['contests'][:2]
+        previous['contests'][0]['title'] = '自定义西安'
+        previous['contests'][0]['profiles'] = {'saved': {'notes': {'t1': '群友'}}}
+        server.atomic_json(self.store.config_path, previous)
+        upgraded = server.Store(self.temp.name)
+        self.assertEqual([s['id'] for s in upgraded.config['contests']],
+                         ['xian', 'changchun', 'chengdu'])
+        self.assertEqual(upgraded.config['contests'][:2], previous['contests'])
+        self.assertEqual(server.Store(self.temp.name).config, upgraded.config)
+
     def test_public_notes_groups_and_source_isolation_across_restart(self):
         s=self.store.stations()[0]
         self.store.update('xian',dict(source=s['source'],notes={'Team001':'群友'},public_groups=[dict(id='friends',name='群友',teams=['Team001'])],default_group='friends'))

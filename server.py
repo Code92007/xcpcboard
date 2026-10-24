@@ -24,6 +24,9 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 ROOT = Path(__file__).resolve().parent
 POLL = max(10, int(os.getenv('POLL_SECONDS', '15')))
 LOG = logging.getLogger('xcpcboard')
+CHENGDU_STATION = dict(id='chengdu', title='ICPC 成都',
+                       board_url='https://board.xcpcio.com/icpc/51st/chengdu-warmup?group=official',
+                       room='', freeze_after=4, reveal=False, profiles={})
 AC = {'AC', 'OK', 'CORRECT', 'ACCEPTED'}
 PENDING = {'PD', 'PENDING', 'WAITING', 'COMPILING', 'JUDGING', 'FROZEN'}
 REJECTED = {'WA', 'WRONG_ANSWER', 'RJ', 'REJECTED', 'INCORRECT', 'NO', 'NO_OUTPUT',
@@ -550,10 +553,15 @@ class Store:
         self.config_path = self.directory / 'config.json'
         if self.config_path.exists():
             self.config = json.loads(self.config_path.read_text())
+            if (not any(s['id'] == 'chengdu' for s in self.config['contests']) and
+                    any(s['id'] in ('xian', 'changchun') for s in self.config['contests'])):
+                self.config['contests'].append(copy.deepcopy(CHENGDU_STATION))
+                atomic_json(self.config_path, self.config)
         else:
             self.config = {'contests': [
                 dict(id='xian', title='ICPC 西安', board_url='https://board.xcpcio.com/icpc/51st/xian-warmup?group=official', room='', freeze_after=4, reveal=False, profiles={}),
-                dict(id='changchun', title='CCPC 长春', board_url='https://rank.iccpc.cn/r/8a3a28e3-f6b3-4a58-b4ac-fa8039fb2c72', room='', freeze_after=4, reveal=False, profiles={})]}
+                dict(id='changchun', title='CCPC 长春', board_url='https://rank.iccpc.cn/r/8a3a28e3-f6b3-4a58-b4ac-fa8039fb2c72', room='', freeze_after=4, reveal=False, profiles={}),
+                copy.deepcopy(CHENGDU_STATION)]}
             atomic_json(self.config_path, self.config)
         for station in self.config['contests']:
             path = board_source(station['board_url'])[0]

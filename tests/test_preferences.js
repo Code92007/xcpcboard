@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('node:assert/strict');
-const {load} = require('../static/preferences.js');
+const {load, matchStars} = require('../static/preferences.js');
 const values = new Map();
 const storage = {getItem:k => values.get(k) ?? null, setItem:(k,v) => values.set(k,v)};
 const old = {stars:['a','b','unmatched'], notes:{a:'原备注', b:'旧备注', unmatched:'不要迁移'}, groups:[{id:'old-g',name:'群友',teams:['a','b','unmatched']}], view:'local:old-g',queueOnly:true};
@@ -29,4 +29,27 @@ storage.setItem('xcpc-v2:formal', '{broken');
 storage.setItem('xcpc-v2:warmup', JSON.stringify({stars:null,notes:null,groups:[null],view:'stars'}));
 assert.deepEqual(load(storage, station).stars, []);
 assert.deepEqual(load({getItem:()=>{throw Error('disabled');}}, station).groups, []);
+const previousTeams = [
+  {id:'a',name:'同名队',organization:'甲校'},
+  {id:'b',name:'已关注',organization:'乙校'},
+  {id:'c',name:'重名',organization:'丙校'},
+  {id:'d',name:'重名',organization:'丁校'},
+  {id:'e',name:'未参赛',organization:'戊校'}
+];
+const currentTeams = [
+  {id:'new-a',name:'同名队',organization:'甲校'},
+  {id:'new-b',name:'已关注',organization:'乙校'},
+  {id:'new-c',name:'重名',organization:'丙校'},
+  {id:'new-d',name:'重名',organization:'丁校'},
+  {id:'other',name:'同名队 ',organization:'不同学校'}
+];
+let imported = matchStars(['a','b','c','e','missing','a'],previousTeams,currentTeams,['new-b']);
+assert.deepEqual(imported.matches, []);
+assert.equal(imported.ambiguous, 2);
+assert.equal(imported.unmatched, 2);
+assert.equal(imported.alreadyFollowed, 1);
+currentTeams.pop();
+imported = matchStars(['a','b','c','e','missing','a'],previousTeams,currentTeams,['new-b']);
+assert.deepEqual(imported.matches.map(match => match.target.id), ['new-a']);
+assert.equal(imported.ambiguous, 1);
 console.log('Browser preference migration checks passed');

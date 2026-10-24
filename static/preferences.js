@@ -49,7 +49,31 @@
     if (changed) { try { storage.setItem(key(station.source), JSON.stringify(target)); } catch {} }
     return target;
   }
-  const api = {load};
+  function matchStars(starred, sourceTeams, targetTeams, followed=[]) {
+    const sourceById = new Map(sourceTeams.map(team => [team.id, team]));
+    const byName = teams => {
+      const result = new Map();
+      for (const team of teams) {
+        const name = String(team.name || '').trim();
+        if (name) result.set(name, [...(result.get(name) || []), team]);
+      }
+      return result;
+    };
+    const sourceNames = byName(sourceTeams), targetNames = byName(targetTeams);
+    const existing = new Set(followed), matches = [];
+    let unmatched = 0, ambiguous = 0, alreadyFollowed = 0;
+    for (const id of new Set(starred)) {
+      const source = sourceById.get(id);
+      const name = String(source?.name || '').trim();
+      if (!name || !targetNames.has(name)) { unmatched++; continue; }
+      if (sourceNames.get(name).length !== 1 || targetNames.get(name).length !== 1) { ambiguous++; continue; }
+      const target = targetNames.get(name)[0];
+      if (existing.has(target.id)) { alreadyFollowed++; continue; }
+      matches.push({source, target});
+    }
+    return {matches, unmatched, ambiguous, alreadyFollowed};
+  }
+  const api = {load, matchStars};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.XCPCPreferences = api;
 })(globalThis);
