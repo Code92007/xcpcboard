@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent
 POLL = max(10, int(os.getenv('POLL_SECONDS', '15')))
 LOG = logging.getLogger('xcpcboard')
 CHENGDU_STATION = dict(id='chengdu', title='ICPC 成都',
-                       board_url='https://board.xcpcio.com/icpc/51st/chengdu-warmup?group=official',
+                       board_url='https://board.xcpcio.com/icpc/51st/chengdu?group=official',
                        room='', freeze_after=4, reveal=False, profiles={})
 AC = {'AC', 'OK', 'CORRECT', 'ACCEPTED'}
 PENDING = {'PD', 'PENDING', 'WAITING', 'COMPILING', 'JUDGING', 'FROZEN'}
@@ -257,7 +257,8 @@ def build_board(raw, station, now=None):
               for i, p in enumerate(c.get('problem_id', []))]
     problems = [dict(id=str(p['id']), label=str(p.get('label', p['id'])), accepted=0,
                      color=p.get('balloon_color', {}).get('background_color', '#e6e9ef')) for p in ps]
-    if not problems:
+    runs = entries(raw['runs'])
+    if not problems and runs:
         raise ValueError('未找到题目信息')
     pmap = {p['id']: i for i, p in enumerate(problems)}
     orgs = {str(o['id']): localized(o.get('name')) for o in entries(raw.get('organizations', []))}
@@ -278,7 +279,6 @@ def build_board(raw, station, now=None):
     penalty_mode = c.get('options', {}).get('calculation_of_penalty', 'in_minutes')
     first = {}
     events = []
-    runs = entries(raw['runs'])
     runs.sort(key=lambda r: (float(r['timestamp']), str(r['team_id']), str(r.get('status', '')).upper() not in AC, str(r['id'])))
     seen = set()
     for r in runs:

@@ -25,6 +25,23 @@ def run(rid, tid, pid, second, status):
 
 
 class ScoringTests(unittest.TestCase):
+    def test_prestart_teams_are_visible_before_problems_and_transition_to_live_scores(self):
+        raw = fixture()
+        del raw['config']['problems']
+        pending = server.build_board(raw, dict(board_url=URL), START - 60)
+        self.assertEqual((pending['state'], pending['problems'], pending['events'], pending['total_runs']),
+                         ('pending', [], [], 0))
+        self.assertEqual(len(pending['teams']), 3)
+        self.assertTrue(all(not team['problems'] and not team['medal'] for team in pending['teams']))
+        raw['config']['problems'] = [dict(id='0', label='A')]
+        raw['runs'] = [run('1', 't1', '0', 60, 'AC')]
+        live = server.build_board(raw, dict(board_url=URL), START + 120)
+        self.assertEqual((live['state'], live['problems'][0]['label'], live['total_runs']), ('running', 'A', 1))
+        self.assertEqual(next(t for t in live['teams'] if t['id'] == 't1')['solved'], 1)
+        del raw['config']['problems']
+        with self.assertRaisesRegex(ValueError, '未找到题目信息'):
+            server.build_board(raw, dict(board_url=URL), START + 120)
+
     def test_official_medals_follow_upstream_counts_and_keep_ties(self):
         raw = fixture()
         raw['teams'] += [dict(id='t3', name='三队', group=['official']), dict(id='t4', name='四队', group=['official'])]
@@ -109,7 +126,7 @@ class PersistenceTests(unittest.TestCase):
 
     def test_chengdu_is_added_to_existing_stations_once(self):
         self.assertEqual(server.board_source(self.store.station('chengdu')['board_url'])[0],
-                         'icpc/51st/chengdu-warmup')
+                         'icpc/51st/chengdu')
         previous = copy.deepcopy(self.store.config)
         previous['contests'] = previous['contests'][:2]
         previous['contests'][0]['title'] = '自定义西安'

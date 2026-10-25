@@ -22,7 +22,7 @@ function persist() { if(S.local) { S.local.view=S.view; S.local.rankGroup=S.rank
 function note(team) { return S.local?.notes?.[team.id] || station()?.notes?.[team.id] || ''; }
 function stars() { return S.local?.stars || []; }
 function rank(team) { return team.ranks[S.rankGroup] ?? null; }
-function rankText(team) { const n=rank(team); return n==null?'*':String(n); }
+function rankText(team) { if(board()?.state==='pending'&&!board().problems.length)return '—'; const n=rank(team); return n==null?'*':String(n); }
 function rankBadge(team) {
   const medal=['all','official'].includes(S.rankGroup)&&team.groups.includes('official')&&!team.groups.includes('unofficial')&&['gold','silver','bronze'].includes(team.medal)?team.medal:'';
   const title=medal?{gold:'金牌区',silver:'银牌区',bronze:'铜牌区'}[medal]+' · 正式队伍第 '+team.ranks.official+' 名':'当前排名';
@@ -113,7 +113,7 @@ function renderBanner() {
     const warmup=/warmup|热身/i.test(b.title+s.board_url);
     let status=b.state==='pending'?'尚未开始':b.state==='finished'?'比赛已结束':b.frozen?'已封榜':'比赛进行中';
     const freezeHours=((b.freeze_at-b.start)/3600).toFixed(2).replace(/\.?0+$/,'');
-    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(b.title)}</h2><span class="status-badge ${b.frozen?'frozen':''}">${status}${b.frozen&&b.state==='finished'?' · 封榜保留':''}</span>${warmup?'<span class="status-badge warmup">热身赛预览</span>':''}</div><div class="contest-meta"><span>${date(b.start)}（北京时间）</span><span>赛程 ${(b.end-b.start)/3600} 小时</span><span>${b.revealed?'已手动解封':`开赛 ${freezeHours}h 后封榜`}</span><span>${b.problem_total??b.problems.length} 道题目${b.problem_reveal?` · 已揭晓 ${b.problems.length} 题`:''}</span></div></div><div class="contest-right"><div class="contest-clock"><strong id="contestClock"></strong><small id="clockLabel"></small></div><button class="video-toggle ${videoOpen()?'active':''}" data-action="video">${videoOpen()?'收起':'▹'} 直播 / 视频</button></div>`;
+    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(b.title)}</h2><span class="status-badge ${b.frozen?'frozen':''}">${status}${b.frozen&&b.state==='finished'?' · 封榜保留':''}</span>${warmup?'<span class="status-badge warmup">热身赛预览</span>':''}</div><div class="contest-meta"><span>${date(b.start)}（北京时间）</span><span>赛程 ${(b.end-b.start)/3600} 小时</span><span>${b.revealed?'已手动解封':`开赛 ${freezeHours}h 后封榜`}</span><span>${b.problems.length || b.problem_total?`${b.problem_total??b.problems.length} 道题目${b.problem_reveal?` · 已揭晓 ${b.problems.length} 题`:''}`:'题目待公布'}</span></div></div><div class="contest-right"><div class="contest-clock"><strong id="contestClock"></strong><small id="clockLabel"></small></div><button class="video-toggle ${videoOpen()?'active':''}" data-action="video">${videoOpen()?'收起':'▹'} 直播 / 视频</button></div>`;
     updateClock();
   }
   $('sourceLink').href=s.board_url || 'https://board.xcpcio.com/';

@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import server
 
 
@@ -61,6 +62,29 @@ class PreferenceTests(unittest.TestCase):
             self.assertEqual(public['notes'], {'new':'群友'})
             self.assertEqual(public['public_groups'][0]['teams'], ['new'])
             self.assertEqual(public['default_group'], 'friends')
+
+    def test_prestart_refresh_restores_warmup_groups_before_problems_are_published(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = server.Store(directory)
+            path = 'icpc/51st/chengdu'
+            warmup = path + '-warmup'
+            old_key = server.source_key(warmup)
+            store.update('chengdu', dict(board_url='https://board.xcpcio.com/' + warmup))
+            store.update('chengdu', dict(source=old_key, public_groups=[
+                dict(id='friends', name='群友', teams=['F32'])], default_group='friends'))
+            store.raw[old_key] = dict(teams=[dict(id='F32', name='同队', organization='甲校')])
+            store.update('chengdu', dict(board_url='https://board.xcpcio.com/' + path))
+            upstream = {'config.json': dict(contest_name='成都', start_time=1800000000000,
+                                            end_time=1800018000000, organizations=[], group={'official': '正式队伍'}),
+                        'team.json': [dict(id='F32', name='同队', organization='甲校', group=['official'])],
+                        'run.json': []}
+            with patch.object(store.fetcher, 'get', side_effect=lambda url, ttl=0: upstream[url.rsplit('/', 1)[-1]]):
+                store.refresh(store.station('chengdu'))
+            board = store.board('chengdu')
+            self.assertEqual((len(board['board']['teams']), board['board']['problems']), (1, []))
+            self.assertEqual(board['station']['public_groups'][0]['teams'], ['F32'])
+            self.assertEqual(board['station']['default_group'], 'friends')
+            self.assertEqual(board['station']['preference_sources'][0]['team_map'], {'F32': 'F32'})
 
 
 if __name__ == '__main__':
