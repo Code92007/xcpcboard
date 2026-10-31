@@ -133,6 +133,7 @@ class PreferenceTests(unittest.TestCase):
                        teams=[dict(id='G31', name='群友队', organization='甲校')])
             server.atomic_json(Path(directory) / (old_key + '.json.gz'), raw, True)
             store.load(warmup)
+            store.update('wuhan', dict(board_url='https://board.xcpcio.com/' + warmup))
             store.update('wuhan', dict(source=old_key, notes={'G31': '群友'}, public_groups=[
                 dict(id='friends', name='群友', teams=['G31'])], default_group='friends'))
             store.update('wuhan', dict(board_url='https://board.xcpcio.com/' + path))

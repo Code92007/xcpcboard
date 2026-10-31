@@ -139,6 +139,8 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(server.Store(self.temp.name).config, upgraded.config)
 
     def test_wuhan_upgrade_preserves_existing_settings_and_formal_link(self):
+        self.assertEqual(server.board_source(self.store.station('wuhan')['board_url'])[0],
+                         'icpc/51st/wuhan')
         previous = copy.deepcopy(self.store.config)
         previous['contests'] = [s for s in previous['contests'] if s['id'] != 'wuhan']
         previous['contests'][0]['profiles'] = {'saved': {'notes': {'t1': '群友'}}}
@@ -156,6 +158,8 @@ class PersistenceTests(unittest.TestCase):
         for sid, url in [('wuhan', 'https://board.xcpcio.com/icpc/51st/wuhan'),
                          ('girls', 'https://rank.iccpc.cn/r/11111111-1111-4111-8111-111111111111')]:
             with self.subTest(station=sid):
+                if sid == 'wuhan':
+                    self.store.update(sid, dict(board_url=url + '-warmup'))
                 old = self.store.public_station(self.store.station(sid))
                 self.store.update(sid, dict(source=old['source'], reveal=True))
                 self.store.update(sid, dict(title=old['title']))
