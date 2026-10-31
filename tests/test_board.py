@@ -177,7 +177,7 @@ class PersistenceTests(unittest.TestCase):
                 self.store.update(sid, dict(source=new['source'], reveal=True))
                 self.assertTrue(self.store.station(sid)['reveal'])
 
-    def test_stations_sort_pinned_first_then_contest_start_with_both_providers(self):
+    def test_stations_keep_girls_second_then_sort_others_by_pinned_and_start(self):
         times = {'xian': 1792224000000, 'chengdu': 1792890600000, 'wuhan': 1793428800000}
         for sid, start in times.items():
             path = server.board_source(self.store.station(sid)['board_url'])[0]
@@ -190,13 +190,19 @@ class PersistenceTests(unittest.TestCase):
                                                      time_context=dict(wall_clock_timezone='Asia/Shanghai'))
         self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'chengdu', 'changchun', 'xian'])
         self.store.update('xian', dict(pinned=True))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'xian', 'girls', 'chengdu', 'changchun'])
+        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'xian', 'chengdu', 'changchun'])
         self.store.update('wuhan', dict(pinned=False))
         self.assertEqual([s['id'] for s in self.store.stations()], ['xian', 'girls', 'wuhan', 'chengdu', 'changchun'])
         before = copy.deepcopy(self.store.config)
         with self.assertRaises(ValueError):
             self.store.update('wuhan', dict(pinned='false'))
         self.assertEqual(self.store.config, before)
+
+    def test_girls_stays_second_without_formal_data_and_after_restart(self):
+        expected = ['wuhan', 'girls', 'xian', 'changchun', 'chengdu']
+        self.assertEqual([s['id'] for s in self.store.stations()], expected)
+        self.assertIsNone(self.store.board('girls')['board'])
+        self.assertEqual([s['id'] for s in server.Store(self.temp.name).stations()], expected)
 
     def test_public_notes_groups_and_source_isolation_across_restart(self):
         s=self.store.public_station(self.store.station('xian'))

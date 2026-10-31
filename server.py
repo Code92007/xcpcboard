@@ -700,7 +700,12 @@ class Store:
     def stations(self):
         with self.lock:
             stations = [self.public_station(s) for s in self.config['contests']]
-            return sorted(stations, key=lambda s: (not s['pinned'], -(s['start_time'] or 0)))
+            stations.sort(key=lambda s: (not s['pinned'], -(s['start_time'] or 0)))
+            girls = next((s for s in stations if s['id'] == 'girls'), None)
+            if girls is not None:
+                stations.remove(girls)
+                stations.insert(min(1, len(stations)), girls)
+            return stations
 
     def station(self, sid):
         with self.lock:
