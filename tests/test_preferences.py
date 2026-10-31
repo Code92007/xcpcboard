@@ -38,14 +38,15 @@ class PreferenceTests(unittest.TestCase):
                 raw = dict(path=path, fetched_at=1, teams=[dict(id='a',name='一队'),dict(id='b',name='二队')])
                 server.atomic_json(Path(directory) / (server.source_key(path)+'.json.gz'), raw, True)
             restored = server.Store(directory)
-            public = restored.stations()[0]
+            public = restored.public_station(restored.station('xian'))
             self.assertEqual(public['notes'], {'a':'群友甲','b':'新备注'})
             self.assertEqual(public['public_groups'], [dict(id='new-friends',name='群友',teams=['a','b'])])
             self.assertEqual(public['default_group'], 'new-friends')
             self.assertEqual(public['preference_sources'], [dict(source=old_key,team_map={'a':'a','b':'b'},public_group_map={'old-friends':'new-friends'})])
             self.assertEqual(restored.station('xian')['profiles'][old_key], original)
             restored.update('xian', dict(source=key,notes={},public_groups=[],default_group='all'))
-            again = server.Store(directory).stations()[0]
+            again_store = server.Store(directory)
+            again = again_store.public_station(again_store.station('xian'))
             self.assertEqual((again['notes'],again['public_groups'],again['default_group']), ({},[],'all'))
 
     def test_inheritance_waits_for_formal_snapshot_then_handles_new_team_ids(self):
@@ -55,10 +56,10 @@ class PreferenceTests(unittest.TestCase):
             store.raw[old_key] = dict(teams=[dict(id='old',name='一队',organization='大学')])
             store.update('xian',dict(source=old_key,notes={'old':'群友'},public_groups=[dict(id='friends',name='群友',teams=['old'])],default_group='friends'))
             store.update('xian',dict(board_url=URL))
-            self.assertEqual(store.stations()[0]['notes'], {})
+            self.assertEqual(store.public_station(store.station('xian'))['notes'], {})
             store.raw[key] = dict(teams=[dict(id='new',name='一队',organization='大学')])
             store.inherit_preferences(PATH)
-            public = store.stations()[0]
+            public = store.public_station(store.station('xian'))
             self.assertEqual(public['notes'], {'new':'群友'})
             self.assertEqual(public['public_groups'][0]['teams'], ['new'])
             self.assertEqual(public['default_group'], 'friends')
@@ -85,6 +86,37 @@ class PreferenceTests(unittest.TestCase):
             self.assertEqual(board['station']['public_groups'][0]['teams'], ['F32'])
             self.assertEqual(board['station']['default_group'], 'friends')
             self.assertEqual(board['station']['preference_sources'][0]['team_map'], {'F32': 'F32'})
+
+    def test_wuhan_switch_retains_warmup_snapshot_and_remaps_follows_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = server.Store(directory)
+            path = 'icpc/51st/wuhan'
+            warmup = path + '-warmup'
+            old_key, key = server.source_key(warmup), server.source_key(path)
+            raw = dict(path=warmup, fetched_at=1, config={},
+                       teams=[dict(id='G31', name='群友队', organization='甲校')])
+            server.atomic_json(Path(directory) / (old_key + '.json.gz'), raw, True)
+            store.load(warmup)
+            store.update('wuhan', dict(source=old_key, notes={'G31': '群友'}, public_groups=[
+                dict(id='friends', name='群友', teams=['G31'])], default_group='friends'))
+            store.update('wuhan', dict(board_url='https://board.xcpcio.com/' + path))
+            upstream = {'config.json': dict(contest_name='武汉', start_time=1800000000000,
+                                            end_time=1800018000000, group={'official': '正式队伍'}),
+                        'team.json': [dict(id='G31', name='另一队', organization='乙校', group=['official']),
+                                      dict(id='new-G31', name='群友队', organization='甲校', group=['official'])],
+                        'run.json': []}
+            with patch.object(store.fetcher, 'get', side_effect=lambda url, ttl=0: upstream[url.rsplit('/', 1)[-1]]):
+                store.refresh(store.station('wuhan'))
+            restored = server.Store(directory)
+            station = restored.board('wuhan')['station']
+            self.assertEqual(station['notes'], {'new-G31': '群友'})
+            self.assertEqual(station['public_groups'][0]['teams'], ['new-G31'])
+            self.assertEqual(station['default_group'], 'friends')
+            self.assertEqual(station['preference_sources'][0]['team_map'], {'G31': 'new-G31'})
+            self.assertEqual(restored.raw[old_key], raw)
+            restored.update('wuhan', dict(source=key, notes={}, public_groups=[], default_group='all'))
+            again = server.Store(directory).board('wuhan')['station']
+            self.assertEqual((again['notes'], again['public_groups']), ({}, []))
 
 
 if __name__ == '__main__':

@@ -128,23 +128,56 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(server.board_source(self.store.station('chengdu')['board_url'])[0],
                          'icpc/51st/chengdu')
         previous = copy.deepcopy(self.store.config)
-        previous['contests'] = previous['contests'][:2]
+        previous['contests'] = [s for s in previous['contests'] if s['id'] in ('xian', 'changchun')]
         previous['contests'][0]['title'] = '自定义西安'
         previous['contests'][0]['profiles'] = {'saved': {'notes': {'t1': '群友'}}}
         server.atomic_json(self.store.config_path, previous)
         upgraded = server.Store(self.temp.name)
         self.assertEqual([s['id'] for s in upgraded.config['contests']],
-                         ['xian', 'changchun', 'chengdu'])
+                         ['xian', 'changchun', 'chengdu', 'wuhan'])
         self.assertEqual(upgraded.config['contests'][:2], previous['contests'])
         self.assertEqual(server.Store(self.temp.name).config, upgraded.config)
 
+    def test_wuhan_upgrade_preserves_existing_settings_and_formal_link(self):
+        previous = copy.deepcopy(self.store.config)
+        previous['contests'] = [s for s in previous['contests'] if s['id'] != 'wuhan']
+        previous['contests'][0]['profiles'] = {'saved': {'notes': {'t1': '群友'}}}
+        server.atomic_json(self.store.config_path, previous)
+        upgraded = server.Store(self.temp.name)
+        self.assertEqual(upgraded.config['contests'][:-1], previous['contests'])
+        self.assertEqual(upgraded.stations()[0]['id'], 'wuhan')
+        self.assertTrue(upgraded.stations()[0]['pinned'])
+        upgraded.update('wuhan', dict(board_url='https://board.xcpcio.com/icpc/51st/wuhan'))
+        restarted = server.Store(self.temp.name)
+        self.assertEqual(restarted.config, upgraded.config)
+        self.assertEqual(server.board_source(restarted.station('wuhan')['board_url'])[0], 'icpc/51st/wuhan')
+
+    def test_stations_sort_pinned_first_then_contest_start_with_both_providers(self):
+        times = {'xian': 1792224000000, 'chengdu': 1792890600000, 'wuhan': 1793428800000}
+        for sid, start in times.items():
+            path = server.board_source(self.store.station(sid)['board_url'])[0]
+            self.store.raw[server.source_key(path)] = dict(config=dict(start_time=start))
+        path = server.board_source(self.store.station('changchun')['board_url'])[0]
+        self.store.raw[server.source_key(path)] = dict(provider='iccpc', config=dict(start_time='2026-10-18 09:00:00'),
+                                                     time_context=dict(wall_clock_timezone='Asia/Shanghai'))
+        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'chengdu', 'changchun', 'xian'])
+        self.store.update('xian', dict(pinned=True))
+        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'xian', 'chengdu', 'changchun'])
+        self.store.update('wuhan', dict(pinned=False))
+        self.assertEqual([s['id'] for s in self.store.stations()], ['xian', 'wuhan', 'chengdu', 'changchun'])
+        before = copy.deepcopy(self.store.config)
+        with self.assertRaises(ValueError):
+            self.store.update('wuhan', dict(pinned='false'))
+        self.assertEqual(self.store.config, before)
+
     def test_public_notes_groups_and_source_isolation_across_restart(self):
-        s=self.store.stations()[0]
+        s=self.store.public_station(self.store.station('xian'))
         self.store.update('xian',dict(source=s['source'],notes={'Team001':'群友'},public_groups=[dict(id='friends',name='群友',teams=['Team001'])],default_group='friends'))
         self.store.update('xian',dict(board_url=URL))
-        self.assertEqual(self.store.stations()[0]['notes'],{})
+        self.assertEqual(self.store.public_station(self.store.station('xian'))['notes'],{})
         self.store.update('xian',dict(board_url=s['board_url']))
-        self.assertEqual(server.Store(self.temp.name).stations()[0]['notes'],{'Team001':'群友'})
+        restored = server.Store(self.temp.name)
+        self.assertEqual(restored.public_station(restored.station('xian'))['notes'],{'Team001':'群友'})
         with self.assertRaises(ValueError):
             self.store.update('xian',dict(source='stale',notes={}))
 

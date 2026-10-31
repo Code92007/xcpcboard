@@ -154,7 +154,8 @@ class MediaTests(unittest.TestCase):
             self.assertEqual(s['media'][0]['type'],'live')
             s=store.update('xian',dict(media=[dict(url='BV1B7411m7LV',title='回放'),dict(url='12345',title='直播')]))
             self.assertEqual([x['title'] for x in s['media']],['回放','直播'])
-            self.assertEqual(server.Store(temp).stations()[0]['media'],s['media'])
+            restored=server.Store(temp)
+            self.assertEqual(restored.public_station(restored.station('xian'))['media'],s['media'])
             before=copy.deepcopy(store.config)
             for media in [[dict(url='12345'),dict(url='https://live.bilibili.com/12345')],[dict(url='https://evil.org/a')],[dict(url='12345')]*21]:
                 with self.assertRaises(ValueError):store.update('xian',dict(title='不应写入',media=media))

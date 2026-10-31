@@ -27,6 +27,9 @@ LOG = logging.getLogger('xcpcboard')
 CHENGDU_STATION = dict(id='chengdu', title='ICPC 成都',
                        board_url='https://board.xcpcio.com/icpc/51st/chengdu?group=official',
                        room='', freeze_after=4, reveal=False, profiles={})
+WUHAN_STATION = dict(id='wuhan', title='ICPC 武汉',
+                     board_url='https://board.xcpcio.com/icpc/51st/wuhan-warmup?group=official',
+                     pinned=True, room='', freeze_after=4, reveal=False, profiles={})
 AC = {'AC', 'OK', 'CORRECT', 'ACCEPTED'}
 PENDING = {'PD', 'PENDING', 'WAITING', 'COMPILING', 'JUDGING', 'FROZEN'}
 REJECTED = {'WA', 'WRONG_ANSWER', 'RJ', 'REJECTED', 'INCORRECT', 'NO', 'NO_OUTPUT',
@@ -553,15 +556,19 @@ class Store:
         self.config_path = self.directory / 'config.json'
         if self.config_path.exists():
             self.config = json.loads(self.config_path.read_text())
-            if (not any(s['id'] == 'chengdu' for s in self.config['contests']) and
-                    any(s['id'] in ('xian', 'changchun') for s in self.config['contests'])):
-                self.config['contests'].append(copy.deepcopy(CHENGDU_STATION))
-                atomic_json(self.config_path, self.config)
+            if any(s['id'] in ('xian', 'changchun', 'chengdu') for s in self.config['contests']):
+                changed = False
+                for default in [CHENGDU_STATION, WUHAN_STATION]:
+                    if not any(s['id'] == default['id'] for s in self.config['contests']):
+                        self.config['contests'].append(copy.deepcopy(default))
+                        changed = True
+                if changed:
+                    atomic_json(self.config_path, self.config)
         else:
             self.config = {'contests': [
                 dict(id='xian', title='ICPC 西安', board_url='https://board.xcpcio.com/icpc/51st/xian-warmup?group=official', room='', freeze_after=4, reveal=False, profiles={}),
                 dict(id='changchun', title='CCPC 长春', board_url='https://rank.iccpc.cn/r/8a3a28e3-f6b3-4a58-b4ac-fa8039fb2c72', room='', freeze_after=4, reveal=False, profiles={}),
-                copy.deepcopy(CHENGDU_STATION)]}
+                copy.deepcopy(CHENGDU_STATION), copy.deepcopy(WUHAN_STATION)]}
             atomic_json(self.config_path, self.config)
         for station in self.config['contests']:
             path = board_source(station['board_url'])[0]
@@ -628,6 +635,18 @@ class Store:
     def public_station(self, station):
         path, _, group = board_source(station['board_url'])
         profile = station.get('profiles', {}).get(source_key(path), {})
+        raw = self.raw.get(source_key(path))
+        start = None
+        if raw:
+            value = raw.get('config', {}).get('start_time')
+            if value is not None:
+                if raw.get('provider') == 'iccpc':
+                    parsed = datetime.fromisoformat(str(value))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=ZoneInfo(raw.get('time_context', {}).get('wall_clock_timezone', 'Asia/Shanghai')))
+                    start = parsed.timestamp()
+                else:
+                    start = epoch(value)
         links = copy.deepcopy(self.preference_sources(path))
         for link in links:
             previous = station.get('profiles', {}).get(link['source'], {})
@@ -637,13 +656,15 @@ class Store:
                 if len(matches) == 1:
                     link['public_group_map'][old['id']] = matches[0]['id']
         return {**{k: v for k, v in station.items() if k != 'profiles'}, 'source': source_key(path), 'media': station_media(station),
+                'pinned': station.get('pinned', station['id'] == 'wuhan'), 'start_time': start,
                 'preference_sources': links,
                 'upstream_group': group, 'notes': profile.get('notes', {}),
                 'public_groups': profile.get('public_groups', []), 'default_group': profile.get('default_group', 'all')}
 
     def stations(self):
         with self.lock:
-            return [self.public_station(s) for s in self.config['contests']]
+            stations = [self.public_station(s) for s in self.config['contests']]
+            return sorted(stations, key=lambda s: (not s['pinned'], -(s['start_time'] or 0)))
 
     def station(self, sid):
         with self.lock:
@@ -662,6 +683,10 @@ class Store:
                 config['contests'].append(station)
             if 'title' in data:
                 station['title'] = str(data['title']).strip()[:80] or sid
+            if 'pinned' in data:
+                if not isinstance(data['pinned'], bool):
+                    raise ValueError('置顶选项格式错误')
+                station['pinned'] = data['pinned']
             if 'board_url' in data:
                 station['board_url'] = board_source(data['board_url'])[1]
             if 'room' in data:
