@@ -30,6 +30,10 @@ CHENGDU_STATION = dict(id='chengdu', title='ICPC 成都',
 WUHAN_STATION = dict(id='wuhan', title='ICPC 武汉',
                      board_url='https://board.xcpcio.com/icpc/51st/wuhan-warmup?group=official',
                      pinned=True, room='', freeze_after=4, reveal=False, profiles={})
+GIRLS_STATION = dict(id='girls', title='CCPC 女生赛',
+                     board_url='https://rank.iccpc.cn/r/6277d913-846a-4259-92a5-f61bf54c0783',
+                     warmup_board_url='https://rank.iccpc.cn/r/6277d913-846a-4259-92a5-f61bf54c0783',
+                     room='', freeze_after=4, reveal=False, profiles={})
 AC = {'AC', 'OK', 'CORRECT', 'ACCEPTED'}
 PENDING = {'PD', 'PENDING', 'WAITING', 'COMPILING', 'JUDGING', 'FROZEN'}
 REJECTED = {'WA', 'WRONG_ANSWER', 'RJ', 'REJECTED', 'INCORRECT', 'NO', 'NO_OUTPUT',
@@ -79,7 +83,7 @@ def board_source(value):
     if u.netloc == 'rank.iccpc.cn':
         match = re.fullmatch(r'(?:r/|upload/outrank_attach/)([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:/rank\.json)?', path)
         if not match:
-            raise ValueError('长春榜单链接应为 https://rank.iccpc.cn/r/榜单ID')
+            raise ValueError('CCPC 榜单链接应为 https://rank.iccpc.cn/r/榜单ID')
         uid = match[1].lower()
         return 'iccpc:' + uid, 'https://rank.iccpc.cn/r/' + uid, 'official'
     if u.netloc != 'board.xcpcio.com':
@@ -102,13 +106,32 @@ def warmup_path(path):
     return path + '-warmup' if path and not path.startswith('iccpc:') and not path.endswith('-warmup') else ''
 
 
+def iccpc_team_id(value):
+    text = str(value)
+    return text.split('_', 1)[1] if text.startswith('#cpc') and '_' in text else text
+
+
+def same_iccpc_contest(old, new):
+    """UUID boards need an explicit parent plus matching contest title and year."""
+    if old.get('provider') != 'iccpc' or new.get('provider') != 'iccpc':
+        return False
+    before, after = old.get('config', {}), new.get('config', {})
+    title = str(before.get('title', '')).strip()
+    formal = re.sub(r'\s*[-—–:：]?\s*热身赛\s*$', '', title).strip()
+    target = re.sub(r'\s*[-—–:：]?\s*正式赛\s*$', '', str(after.get('title', '')).strip()).strip()
+    return bool(formal and formal != title and formal == target
+                and str(before.get('start_time', ''))[:4] == str(after.get('start_time', ''))[:4]
+                and re.fullmatch(r'\d{4}', str(before.get('start_time', ''))[:4]))
+
+
 def matching_teams(old, new):
     """Verify team identity before carrying preferences across scoreboard IDs."""
     def identities(raw):
         orgs = {str(o['id']): localized(o.get('name')) for o in entries(raw.get('organizations', []))}
-        return {str(t['id']): tuple(''.join(v.split()).casefold() for v in (
+        team_id = iccpc_team_id if raw.get('provider') == 'iccpc' else str
+        return {team_id(t['id']): tuple(''.join(v.split()).casefold() for v in (
             localized(t.get('name', t.get('team_name'))),
-            orgs.get(str(t.get('organization_id', '')), localized(t.get('organization', t.get('organization_id'))))))
+            orgs.get(str(t.get('organization_id', '')), localized(t.get('organization', t.get('school', t.get('organization_id')))))))
                 for t in entries(raw['teams'])}
     before, after = identities(old), identities(new)
     by_identity, old_counts = {}, {}
@@ -373,9 +396,6 @@ def build_iccpc(raw, station, now=None):
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=ZoneInfo(raw.get('time_context', {}).get('wall_clock_timezone', 'Asia/Shanghai')))
         return parsed.timestamp()
-    def tid(value):
-        text = str(value)
-        return text.split('_', 1)[1] if text.startswith('#cpc') and '_' in text else text
     def cell():
         return dict(state='none', wrong=0, pending=0, minute=None, first=False)
     c, meta = raw['config'], raw['ccpc_meta']
@@ -390,21 +410,24 @@ def build_iccpc(raw, station, now=None):
     show_all = meta.get('view') == 'referee' or bool(meta.get('frozen_show_all'))
     teams, stats = {}, {}
     for t in raw['teams']:
-        team_id = tid(t['team_id'])
+        team_id = iccpc_team_id(t['team_id'])
         kind = int(t.get('tkind') or 0)
         groups = ['unofficial'] if kind == 2 else ['official']
         if kind == 1:
             groups.append('girl')
         members = str(t.get('tmember') or '').split('、')
+        location = str(t.get('room') or '')
+        if re.fullmatch(r'[A-Za-z]+', location) and re.fullmatch(re.escape(location) + r'\d{1,4}', team_id):
+            location = team_id
         teams[team_id] = dict(id=team_id, name=str(t.get('name') or team_id), organization=str(t.get('school') or ''),
-            location=str(t.get('room') or ''), groups=groups, members=[m for m in members if m],
+            location=location, groups=groups, members=[m for m in members if m],
             solved=0, penalty=0, last_solve=0)
         stats[team_id] = {}
     verdicts = {4:'AC', 5:'PE', 6:'WA', 7:'TLE', 8:'MLE', 9:'OLE', 10:'RE', 11:'CE'}
     events, seen, accepted = [], set(), {}
     ordered = sorted(raw['runs'], key=lambda r: (instant(r['in_date']), int(r['solution_id'])))
     for r in ordered:
-        rid, team_id, pid = str(r['solution_id']), tid(r['team_id']), str(r['problem_id'])
+        rid, team_id, pid = str(r['solution_id']), iccpc_team_id(r['team_id']), str(r['problem_id'])
         sec = instant(r['in_date']) - start
         if rid in seen or team_id not in teams or not 0 <= sec < duration or sec > now - start:
             continue
@@ -558,7 +581,7 @@ class Store:
             self.config = json.loads(self.config_path.read_text())
             if any(s['id'] in ('xian', 'changchun', 'chengdu') for s in self.config['contests']):
                 changed = False
-                for default in [CHENGDU_STATION, WUHAN_STATION]:
+                for default in [CHENGDU_STATION, WUHAN_STATION, GIRLS_STATION]:
                     if not any(s['id'] == default['id'] for s in self.config['contests']):
                         self.config['contests'].append(copy.deepcopy(default))
                         changed = True
@@ -568,13 +591,13 @@ class Store:
             self.config = {'contests': [
                 dict(id='xian', title='ICPC 西安', board_url='https://board.xcpcio.com/icpc/51st/xian-warmup?group=official', room='', freeze_after=4, reveal=False, profiles={}),
                 dict(id='changchun', title='CCPC 长春', board_url='https://rank.iccpc.cn/r/8a3a28e3-f6b3-4a58-b4ac-fa8039fb2c72', room='', freeze_after=4, reveal=False, profiles={}),
-                copy.deepcopy(CHENGDU_STATION), copy.deepcopy(WUHAN_STATION)]}
+                copy.deepcopy(CHENGDU_STATION), copy.deepcopy(WUHAN_STATION), copy.deepcopy(GIRLS_STATION)]}
             atomic_json(self.config_path, self.config)
         for station in self.config['contests']:
             path = board_source(station['board_url'])[0]
             if path:
                 self.load(path)
-                previous = warmup_path(path)
+                previous = self.previous_path(path)
                 if previous:
                     self.load(previous)
                 self.inherit_preferences(path)
@@ -594,14 +617,27 @@ class Store:
             except (OSError, ValueError, KeyError, EOFError):
                 continue
 
-    def preference_sources(self, path):
+    def previous_path(self, path):
         previous = warmup_path(path)
+        if previous or not path.startswith('iccpc:'):
+            return previous
+        for station in self.config['contests']:
+            if board_source(station['board_url'])[0] == path:
+                parent = board_source(station.get('warmup_board_url', ''))[0]
+                if parent.startswith('iccpc:') and parent != path:
+                    return parent
+        return ''
+
+    def preference_sources(self, path):
+        previous = self.previous_path(path)
         if not previous:
             return []
         key, old_key = source_key(path), source_key(previous)
         with self.lock:
             old, new = self.raw.get(old_key), self.raw.get(key)
             if not old or not new:
+                return []
+            if path.startswith('iccpc:') and not same_iccpc_contest(old, new):
                 return []
             cached = self.preference_cache.get(key)
             if not cached or cached[0] is not old or cached[1] is not new:
@@ -746,8 +782,8 @@ class Store:
             atomic_json(self.config_path, config)
             self.config = config
             self.load(path) if path else None
-            if warmup_path(path):
-                self.load(warmup_path(path))
+            if self.previous_path(path):
+                self.load(self.previous_path(path))
             self.inherit_preferences(path)
         self.wakeup.set()
         return self.public_station(self.station(sid))

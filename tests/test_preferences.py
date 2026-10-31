@@ -11,6 +11,42 @@ URL = 'https://board.xcpcio.com/' + PATH
 
 
 class PreferenceTests(unittest.TestCase):
+    def test_girls_uuid_switch_verifies_title_year_school_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = server.Store(directory)
+            warmup = server.board_source(server.GIRLS_STATION['board_url'])[0]
+            path = 'iccpc:11111111-1111-4111-8111-111111111111'
+            old_key, key = server.source_key(warmup), server.source_key(path)
+            title = '第十二届中国大学生程序设计竞赛（成都女生专场）'
+            old = dict(provider='iccpc', path=warmup, fetched_at=1,
+                       config=dict(title=title+'-热身赛', start_time='2026-10-31 15:00:00'),
+                       teams=[dict(team_id='#cpc1002_A01', name='一队', school='甲校'),
+                              dict(team_id='B02', name='二队', school='乙校')])
+            new = dict(provider='iccpc', path=path, fetched_at=2,
+                       config=dict(title=title+' - 正式赛', start_time='2026-11-01 09:00:00'),
+                       teams=[dict(team_id='#cpc1003_C04', name='一队', school='甲校'),
+                              dict(team_id='B02', name='二队', school='丙校')])
+            for raw in [old, new]:
+                server.atomic_json(Path(directory)/(server.source_key(raw['path'])+'.json.gz'), raw, True)
+            store.load(warmup)
+            store.update('girls', dict(source=old_key, notes={'A01':'群友', 'B02':'其他校'},
+                                      public_groups=[dict(id='friends', name='群友', teams=['A01','B02'])], default_group='friends'))
+            store.update('girls', dict(board_url='https://rank.iccpc.cn/r/'+path.split(':')[1]))
+            restored = server.Store(directory)
+            public = restored.public_station(restored.station('girls'))
+            self.assertEqual(public['notes'], {'C04':'群友'})
+            self.assertEqual(public['public_groups'][0]['teams'], ['C04'])
+            self.assertEqual(public['preference_sources'][0]['team_map'], {'A01':'C04'})
+            self.assertEqual(public['default_group'], 'friends')
+            self.assertEqual(restored.station('girls')['board_url'], 'https://rank.iccpc.cn/r/'+path.split(':')[1])
+            restored.update('girls', dict(source=key, notes={}, public_groups=[], default_group='all'))
+            again = server.Store(directory).public_station(restored.station('girls'))
+            self.assertEqual((again['notes'], again['public_groups']), ({}, []))
+            new['config']['start_time'] = '2027-11-01 09:00:00'
+            self.assertFalse(server.same_iccpc_contest(old, new))
+            new['config'].update(start_time='2026-11-01 09:00:00', title='另一场女生赛')
+            self.assertFalse(server.same_iccpc_contest(old, new))
+
     def test_team_identity_checks_school_reused_ids_and_ambiguous_names(self):
         old = dict(teams=[dict(id='a', name='一队', organization='甲校'), dict(id='b', name='二队', organization='乙校'),
                           dict(id='c', name='同名', organization='甲校'), dict(id='d', name='同名', organization='甲校')])

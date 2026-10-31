@@ -134,7 +134,7 @@ class PersistenceTests(unittest.TestCase):
         server.atomic_json(self.store.config_path, previous)
         upgraded = server.Store(self.temp.name)
         self.assertEqual([s['id'] for s in upgraded.config['contests']],
-                         ['xian', 'changchun', 'chengdu', 'wuhan'])
+                         ['xian', 'changchun', 'chengdu', 'wuhan', 'girls'])
         self.assertEqual(upgraded.config['contests'][:2], previous['contests'])
         self.assertEqual(server.Store(self.temp.name).config, upgraded.config)
 
@@ -160,11 +160,14 @@ class PersistenceTests(unittest.TestCase):
         path = server.board_source(self.store.station('changchun')['board_url'])[0]
         self.store.raw[server.source_key(path)] = dict(provider='iccpc', config=dict(start_time='2026-10-18 09:00:00'),
                                                      time_context=dict(wall_clock_timezone='Asia/Shanghai'))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'chengdu', 'changchun', 'xian'])
+        path = server.board_source(self.store.station('girls')['board_url'])[0]
+        self.store.raw[server.source_key(path)] = dict(provider='iccpc', config=dict(start_time='2026-10-31 15:00:00'),
+                                                     time_context=dict(wall_clock_timezone='Asia/Shanghai'))
+        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'chengdu', 'changchun', 'xian'])
         self.store.update('xian', dict(pinned=True))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'xian', 'chengdu', 'changchun'])
+        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'xian', 'girls', 'chengdu', 'changchun'])
         self.store.update('wuhan', dict(pinned=False))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['xian', 'wuhan', 'chengdu', 'changchun'])
+        self.assertEqual([s['id'] for s in self.store.stations()], ['xian', 'girls', 'wuhan', 'chengdu', 'changchun'])
         before = copy.deepcopy(self.store.config)
         with self.assertRaises(ValueError):
             self.store.update('wuhan', dict(pinned='false'))

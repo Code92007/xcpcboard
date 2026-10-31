@@ -32,6 +32,16 @@ def board(data, sec=20000, **options):
 
 
 class IccpcTests(unittest.TestCase):
+    def test_seat_uses_full_team_number_when_room_is_only_a_zone(self):
+        d = fixture(3)
+        d['team'][0].update(team_id='#cpc1002_A01', room='A')
+        d['team'][1].update(team_id='B02', room='B02')
+        d['team'][2].update(room='一号场馆')
+        rows = {t['id']:t for t in board(d)['teams']}
+        self.assertEqual(rows['A01']['location'], 'A01')
+        self.assertEqual(rows['B02']['location'], 'B02')
+        self.assertEqual(rows['2']['location'], '一号场馆')
+
     def test_medals_use_configured_denominator_ratios_and_official_ranks(self):
         d = fixture(21)
         d['team'][1]['tkind'] = 1
