@@ -11,3 +11,5 @@
 
 .rank-badge{display:inline-flex;align-items:center;justify-content:center;min-width:34px;min-height:27px;padding:4px 5px;border-radius:4px;line-height:1.2}.rank-badge.medal-gold{background:#f4d96d;color:#70531b}.rank-badge.medal-silver{background:#e1e7ec;color:#52616e}.rank-badge.medal-bronze{background:#edc5a3;color:#80512d}.q-rank .rank-badge{width:100%;min-width:0;min-height:25px}
 #groupForm .group-picker{height:clamp(90px,calc(88vh - 490px),270px)}#groupForm:has(#groupDefault) .group-picker{height:clamp(90px,calc(88vh - 535px),270px)}
+
+.follow-view{display:flex;align-items:center;gap:8px;flex-shrink:0}.view-tabs .follow-picker{padding:4px 7px;border:1px solid #dce6d8;border-radius:5px;font-size:10px;color:var(--green);background:#f3f8f1}.view-tabs .follow-picker:hover{background:#e7f1e4}.picker-actions{display:flex;gap:6px}.picker-actions button{font-size:11px;padding:7px 9px}.picker-actions #clearPicked{color:#a66956}.picker-actions button:disabled{cursor:default}
