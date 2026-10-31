@@ -18,7 +18,7 @@ async function api(path, data, admin=false) {
 function station() { return S.data?.station || S.stations.find(s=>s.id===S.active); }
 function board() { return S.data?.board; }
 function prefKey() { return 'xcpc-v2:'+S.source; }
-function persist() { if(S.local) { S.local.view=S.view; S.local.rankGroup=S.rankGroup; S.local.queueOnly=S.queueOnly; save(localStorage,prefKey(),S.local); } }
+function persist() { if(S.local&&!S.local.preview) { S.local.view=S.view; S.local.rankGroup=S.rankGroup; S.local.queueOnly=S.queueOnly; save(localStorage,prefKey(),S.local); } }
 function note(team) { return S.local?.notes?.[team.id] || station()?.notes?.[team.id] || ''; }
 function stars() { return S.local?.stars || []; }
 function rank(team) { return team.ranks[S.rankGroup] ?? null; }
@@ -65,7 +65,7 @@ async function refresh() {
     S.data=data; S.online=true;S.receivedAt=Date.now()/1000;
     const catalogIndex=S.stations.findIndex(s=>s.id===sid);if(catalogIndex>=0)S.stations[catalogIndex]=data.station;
     const source=data.station.source;
-    const sourceChanged=source!==S.source, signature=JSON.stringify([source,data.station.preference_sources]);
+    const sourceChanged=source!==S.source, signature=JSON.stringify([source,data.station.preference_sources,data.station.preference_preview?.source]);
     if(sourceChanged || signature!==preferenceSignature) {
       S.source=source; S.local=XCPCPreferences.load(localStorage,data.station);preferenceSignature=signature;
       S.view=S.local.view || (data.station.default_group!=='all'?'pub:'+data.station.default_group:'all');
@@ -190,7 +190,7 @@ function renderStatus() {
 }
 function renderViews() {
   const s=station();
-  const tabs=[['all','全部队伍'],['stars',waitingForFormal()?'我的关注 · 待导入':'我的关注 '+stars().length],...(s?.public_groups||[]).map(g=>['pub:'+g.id,`<span class="tag">公共</span>${esc(g.name)}`]),...(S.local?.groups||[]).map(g=>['local:'+g.id,esc(g.name)])];
+  const tabs=[['all','全部队伍'],['stars','我的关注 '+stars().length+(S.local?.preview?' · 热身赛':waitingForFormal()?' · 待导入':'')],...(s?.public_groups||[]).map(g=>['pub:'+g.id,`<span class="tag">公共</span>${esc(g.name)}`]),...(S.local?.groups||[]).map(g=>['local:'+g.id,esc(g.name)])];
   $('viewTabs').innerHTML=tabs.map(([id,name])=>{const tab=`<button data-view="${esc(id)}" class="${S.view===id?'active':''}">${name}</button>`;return id==='stars'?`<span class="follow-view">${tab}<button class="follow-picker" data-action="pick-stars" aria-label="勾选导入我的关注" title="批量勾选队伍或从已有分组添加">＋ 勾选导入</button></span>`:tab;}).join('');
   const groups=board()?.groups||{};
   const rankOptions=[['all','全部排名'],...Object.entries(groups)];
@@ -212,6 +212,13 @@ function renderTable() {
   wrap.closest('.workspace').classList.toggle('many-problems',manyProblems);
   $('showSeat').checked=S.showSeat;
   if(!b) {
+    if(s?.preference_preview) {
+      const teams=s.preference_preview.teams,rows=teams.filter(t=>inView(t)&&matches(t));
+      $('teamCount').textContent=rows.length+' / '+teams.length;
+      $('viewInfo').textContent=(S.view==='all'?'全部队伍':S.view==='stars'?'我的关注':currentGroup()?.name||'')+' · 热身赛名单 · 等待正式赛数据';
+      wrap.innerHTML=`<div class="cache-notice">以下为已保留的热身赛队伍、关注和备注。正式赛名单公布后会自动匹配导入。</div><table><thead><tr><th class="star-col"></th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th></tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell">${stars().includes(t.id)?'★':''}</td><td class="note-cell">${esc(note(t)||'—')}</td>${S.showSeat?`<td class="seat-cell">${esc(t.location)}</td>`:''}<td class="team-cell"><div class="team-name">${esc(t.name)}</div><div class="organization">${esc(t.organization)}</div></td></tr>`).join('')||`<tr><td colspan="${3+Number(S.showSeat)}"><div class="empty">没有找到匹配队伍</div></td></tr>`}</tbody></table>`;
+      return;
+    }
     $('teamCount').textContent='—';
     $('viewInfo').textContent='公开排名始终基于所选原榜组';
     wrap.innerHTML=`<div class="empty"><h3>${waitingForFormal()?'等待正式赛榜单':s?.board_url?'榜单准备中':'等待赛站的第一声键响'}</h3><p>${waitingForFormal()?'官方尚未提供可用的正式赛数据，发布后将自动同步并恢复热身赛关注与备注。':s?.board_url?'后台正在拉取数据，上游恢复后将自动加载。':'这里已为比赛留好位置。填入正式榜单后，队伍和提交会自动到场。'}</p>${S.data?.health?.error&&!waitingForFormal()?`<p>${esc(S.data.health.error)}</p>`:''}<button data-action="settings">配置榜单链接 ↗</button></div>`;return;

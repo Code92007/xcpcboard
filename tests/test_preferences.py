@@ -39,9 +39,18 @@ class PreferenceTests(unittest.TestCase):
             self.assertEqual(store.station('girls')['profiles'][old_key], before)
             self.assertEqual(store.board('girls')['station']['preference_sources'], [])
             self.assertIsNone(store.board('girls')['board'])
+            pending = store.board('girls')['station']
+            self.assertEqual(pending['public_groups'], before['public_groups'])
+            self.assertEqual(pending['notes'], before['notes'])
+            self.assertEqual(pending['default_group'], 'friends')
+            self.assertEqual(pending['preference_preview']['source'], old_key)
+            self.assertEqual(pending['preference_preview']['teams'][0],
+                             dict(id='A01', name='一队', organization='甲校', location='A01'))
+            self.assertNotIn(key, store.station('girls')['profiles'])
             server.atomic_json(Path(directory)/(key+'.json.gz'), new, True)
             restored = server.Store(directory)
             public = restored.public_station(restored.station('girls'))
+            self.assertIsNone(public['preference_preview'])
             self.assertEqual(public['notes'], {'C04':'群友'})
             self.assertEqual(public['public_groups'][0]['teams'], ['C04'])
             self.assertEqual(public['preference_sources'][0]['team_map'], {'A01':'C04'})

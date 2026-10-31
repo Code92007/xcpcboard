@@ -672,6 +672,17 @@ class Store:
         path, _, group = board_source(station['board_url'])
         profile = station.get('profiles', {}).get(source_key(path), {})
         raw = self.raw.get(source_key(path))
+        preview = None
+        if raw is None and path.startswith('iccpc:'):
+            previous = self.previous_path(path)
+            old_key = source_key(previous) if previous else ''
+            old = self.raw.get(old_key)
+            if old and old.get('provider') == 'iccpc':
+                profile = station.get('profiles', {}).get(old_key, {})
+                preview = dict(source=old_key, teams=[
+                    dict(id=iccpc_team_id(t['id']), name=localized(t.get('name', t.get('team_name'))),
+                         organization=localized(t.get('school', t.get('organization'))),
+                         location=iccpc_team_id(t['id'])) for t in entries(old['teams'])])
         start = None
         if raw:
             value = raw.get('config', {}).get('start_time')
@@ -693,7 +704,7 @@ class Store:
                     link['public_group_map'][old['id']] = matches[0]['id']
         return {**{k: v for k, v in station.items() if k != 'profiles'}, 'source': source_key(path), 'media': station_media(station),
                 'pinned': station.get('pinned', station['id'] == 'wuhan'), 'start_time': start,
-                'preference_sources': links,
+                'preference_sources': links, 'preference_preview': preview,
                 'upstream_group': group, 'notes': profile.get('notes', {}),
                 'public_groups': profile.get('public_groups', []), 'default_group': profile.get('default_group', 'all')}
 

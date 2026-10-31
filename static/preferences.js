@@ -12,6 +12,10 @@
       inherited_sources: Array.isArray(data.inherited_sources) ? [...data.inherited_sources] : []};
   }
   function load(storage, station) {
+    if (station.preference_preview?.source) {
+      // Preview the saved warmup without writing unverified IDs to the formal key.
+      return {...normalize(read(storage, key(station.preference_preview.source))), preview:true};
+    }
     const target = normalize(read(storage, key(station.source)));
     let changed = false;
     for (const link of station.preference_sources || []) {

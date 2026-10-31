@@ -29,6 +29,23 @@ storage.setItem('xcpc-v2:formal', '{broken');
 storage.setItem('xcpc-v2:warmup', JSON.stringify({stars:null,notes:null,groups:[null],view:'stars'}));
 assert.deepEqual(load(storage, station).stars, []);
 assert.deepEqual(load({getItem:()=>{throw Error('disabled');}}, station).groups, []);
+// Waiting for an official roster must show the saved warmup without importing IDs.
+const pendingValues = new Map([
+  ['xcpc-v2:warmup', JSON.stringify(old)],
+  ['xcpc-v2:formal', JSON.stringify({stars:['c'], notes:{b:'新备注'}})]
+]);
+const pendingStorage = {getItem:k=>pendingValues.get(k)??null,setItem:(k,v)=>pendingValues.set(k,v)};
+const pendingBefore = [...pendingValues];
+const preview = load(pendingStorage, {source:'formal',preference_preview:{source:'warmup'}});
+assert.equal(preview.preview, true);
+assert.deepEqual(preview.stars, old.stars);
+assert.deepEqual(preview.groups, old.groups);
+assert.deepEqual(preview.notes, old.notes);
+assert.deepEqual([...pendingValues], pendingBefore);
+const published = load(pendingStorage, station);
+assert.deepEqual(published.stars, ['c','new-a','b']);
+assert.equal(published.preview, undefined);
+assert.equal(pendingStorage.getItem('xcpc-v2:warmup'), JSON.stringify(old));
 const previousTeams = [
   {id:'a',name:'同名队',organization:'甲校'},
   {id:'b',name:'已关注',organization:'乙校'},
