@@ -31,7 +31,7 @@ WUHAN_STATION = dict(id='wuhan', title='ICPC 武汉',
                      board_url='https://board.xcpcio.com/icpc/51st/wuhan?group=official',
                      pinned=True, room='', freeze_after=4, reveal=False, profiles={})
 GIRLS_STATION = dict(id='girls', title='CCPC 女生赛',
-                     board_url='https://rank.iccpc.cn/r/6277d913-846a-4259-92a5-f61bf54c0783',
+                     board_url='https://rank.iccpc.cn/r/e5697b3a-8326-4818-84ca-e2ce1688af23',
                      warmup_board_url='https://rank.iccpc.cn/r/6277d913-846a-4259-92a5-f61bf54c0783',
                      room='', freeze_after=4, reveal=False, profiles={})
 AC = {'AC', 'OK', 'CORRECT', 'ACCEPTED'}

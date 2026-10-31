@@ -2,6 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 import server
 
 
@@ -14,7 +15,8 @@ class PreferenceTests(unittest.TestCase):
     def test_girls_uuid_switch_verifies_title_year_school_and_survives_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             store = server.Store(directory)
-            warmup = server.board_source(server.GIRLS_STATION['board_url'])[0]
+            warmup = server.board_source(server.GIRLS_STATION['warmup_board_url'])[0]
+            store.update('girls', dict(board_url=server.GIRLS_STATION['warmup_board_url']))
             path = 'iccpc:11111111-1111-4111-8111-111111111111'
             old_key, key = server.source_key(warmup), server.source_key(path)
             title = '第十二届中国大学生程序设计竞赛（成都女生专场）'
@@ -26,12 +28,18 @@ class PreferenceTests(unittest.TestCase):
                        config=dict(title=title+' - 正式赛', start_time='2026-11-01 09:00:00'),
                        teams=[dict(team_id='#cpc1003_C04', name='一队', school='甲校'),
                               dict(team_id='B02', name='二队', school='丙校')])
-            for raw in [old, new]:
-                server.atomic_json(Path(directory)/(server.source_key(raw['path'])+'.json.gz'), raw, True)
+            server.atomic_json(Path(directory)/(old_key+'.json.gz'), old, True)
             store.load(warmup)
             store.update('girls', dict(source=old_key, notes={'A01':'群友', 'B02':'其他校'},
                                       public_groups=[dict(id='friends', name='群友', teams=['A01','B02'])], default_group='friends'))
             store.update('girls', dict(board_url='https://rank.iccpc.cn/r/'+path.split(':')[1]))
+            before = store.station('girls')['profiles'][old_key]
+            with patch.object(store.fetcher, 'get', side_effect=HTTPError('https://rank.iccpc.cn', 404, 'Not Found', {}, None)):
+                store.refresh(store.station('girls'))
+            self.assertEqual(store.station('girls')['profiles'][old_key], before)
+            self.assertEqual(store.board('girls')['station']['preference_sources'], [])
+            self.assertIsNone(store.board('girls')['board'])
+            server.atomic_json(Path(directory)/(key+'.json.gz'), new, True)
             restored = server.Store(directory)
             public = restored.public_station(restored.station('girls'))
             self.assertEqual(public['notes'], {'C04':'群友'})

@@ -113,11 +113,15 @@ function toggleVideo() {
   const visibility=read(localStorage,'xcpc-media-visibility',{});
   visibility[S.active]=S.video;save(localStorage,'xcpc-media-visibility',visibility);renderBanner();
 }
+function waitingForFormal() {
+  const s=station();
+  return !board() && !!s?.board_url && !!s.warmup_board_url && s.board_url!==s.warmup_board_url;
+}
 function renderBanner() {
   const b=board(),s=station();
   if(!s) { $('contestBanner').innerHTML='<div class="loading">正在连接赛站…</div>';return; }
   if(!b) {
-    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(s.title)}</h2><span class="status-badge">${s.board_url?'等待数据':'待公布榜单'}</span></div><div class="contest-meta">${s.board_url?'首次拉取中，成功后会自动显示。':'正赛链接公布后，在「管理赛站」填入链接即可开始同步。'}</div></div><div class="contest-right"><button class="video-toggle" data-action="video">直播 / 视频</button><button class="video-toggle" data-action="settings">配置赛站 ↗</button></div>`;
+    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(s.title)}</h2><span class="status-badge">${waitingForFormal()?'正式赛数据待公布':s.board_url?'等待数据':'待公布榜单'}</span></div><div class="contest-meta">${waitingForFormal()?'热身赛关注、分组和备注已保留，正式赛队伍公布后自动匹配导入。':s.board_url?'首次拉取中，成功后会自动显示。':'正赛链接公布后，在「管理赛站」填入链接即可开始同步。'}</div></div><div class="contest-right"><button class="video-toggle" data-action="video">直播 / 视频</button><button class="video-toggle" data-action="settings">配置赛站 ↗</button></div>`;
   } else {
     const warmup=/warmup|热身/i.test(b.title+s.board_url);
     let status=b.state==='pending'?'尚未开始':b.state==='finished'?'比赛已结束':b.frozen?'已封榜':'比赛进行中';
@@ -186,7 +190,7 @@ function renderStatus() {
 }
 function renderViews() {
   const s=station();
-  const tabs=[['all','全部队伍'],['stars','我的关注 '+stars().length],...(s?.public_groups||[]).map(g=>['pub:'+g.id,`<span class="tag">公共</span>${esc(g.name)}`]),...(S.local?.groups||[]).map(g=>['local:'+g.id,esc(g.name)])];
+  const tabs=[['all','全部队伍'],['stars',waitingForFormal()?'我的关注 · 待导入':'我的关注 '+stars().length],...(s?.public_groups||[]).map(g=>['pub:'+g.id,`<span class="tag">公共</span>${esc(g.name)}`]),...(S.local?.groups||[]).map(g=>['local:'+g.id,esc(g.name)])];
   $('viewTabs').innerHTML=tabs.map(([id,name])=>{const tab=`<button data-view="${esc(id)}" class="${S.view===id?'active':''}">${name}</button>`;return id==='stars'?`<span class="follow-view">${tab}<button class="follow-picker" data-action="pick-stars" aria-label="勾选导入我的关注" title="批量勾选队伍或从已有分组添加">＋ 勾选导入</button></span>`:tab;}).join('');
   const groups=board()?.groups||{};
   const rankOptions=[['all','全部排名'],...Object.entries(groups)];
@@ -210,7 +214,7 @@ function renderTable() {
   if(!b) {
     $('teamCount').textContent='—';
     $('viewInfo').textContent='公开排名始终基于所选原榜组';
-    wrap.innerHTML=`<div class="empty"><h3>${s?.board_url?'榜单准备中':'等待赛站的第一声键响'}</h3><p>${s?.board_url?'后台正在拉取数据，上游恢复后将自动加载。':'这里已为比赛留好位置。填入正式榜单后，队伍和提交会自动到场。'}</p>${S.data?.health?.error?`<p>${esc(S.data.health.error)}</p>`:''}<button data-action="settings">配置榜单链接 ↗</button></div>`;return;
+    wrap.innerHTML=`<div class="empty"><h3>${waitingForFormal()?'等待正式赛榜单':s?.board_url?'榜单准备中':'等待赛站的第一声键响'}</h3><p>${waitingForFormal()?'官方尚未提供可用的正式赛数据，发布后将自动同步并恢复热身赛关注与备注。':s?.board_url?'后台正在拉取数据，上游恢复后将自动加载。':'这里已为比赛留好位置。填入正式榜单后，队伍和提交会自动到场。'}</p>${S.data?.health?.error&&!waitingForFormal()?`<p>${esc(S.data.health.error)}</p>`:''}<button data-action="settings">配置榜单链接 ↗</button></div>`;return;
   }
   const eligible=b.teams.filter(inRankGroup),rows=eligible.filter(t=>inView(t)&&matches(t));
   $('teamCount').textContent=rows.length+' / '+eligible.length;

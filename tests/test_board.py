@@ -127,6 +127,8 @@ class PersistenceTests(unittest.TestCase):
     def test_chengdu_is_added_to_existing_stations_once(self):
         self.assertEqual(server.board_source(self.store.station('chengdu')['board_url'])[0],
                          'icpc/51st/chengdu')
+        self.assertEqual(self.store.station('girls')['board_url'],
+                         'https://rank.iccpc.cn/r/e5697b3a-8326-4818-84ca-e2ce1688af23')
         previous = copy.deepcopy(self.store.config)
         previous['contests'] = [s for s in previous['contests'] if s['id'] in ('xian', 'changchun')]
         previous['contests'][0]['title'] = '自定义西安'
