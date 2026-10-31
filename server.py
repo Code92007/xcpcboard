@@ -717,6 +717,7 @@ class Store:
                     raise ValueError('最多支持 20 个赛站')
                 station = dict(id=sid, title=sid, board_url='', room='', freeze_after=4, reveal=False, profiles={})
                 config['contests'].append(station)
+            previous_path = board_source(station['board_url'])[0]
             if 'title' in data:
                 station['title'] = str(data['title']).strip()[:80] or sid
             if 'pinned' in data:
@@ -753,6 +754,10 @@ class Store:
                 station['reveal'] = data['reveal']
             path = board_source(station['board_url'])[0]
             key = source_key(path)
+            if 'reveal' in data and data.get('source', key) != key:
+                raise ValueError('榜单已切换，请刷新后揭榜')
+            if previous_path and path != previous_path:
+                station['reveal'] = False
             if any(k in data for k in ['notes', 'public_groups', 'default_group']):
                 if data.get('source') != key:
                     raise ValueError('榜单已切换，请刷新后编辑分组和备注')

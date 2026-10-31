@@ -104,6 +104,15 @@ async function refresh() {
 function eventFingerprint(e) { return e.status+'|'+e.problem; }
 function render() {renderStations();renderBanner();renderViews();renderTable();renderQueue();renderStatus();}
 function videoOpen() { return S.video && !!station()?.media?.length; }
+function toggleVideo() {
+  if(!station()?.media?.length) {
+    openModal('暂无直播或视频','LIVE / VIDEO','<p class="help">这个赛站还没有添加播放内容。管理员可添加 B 站直播间或视频；如需解封已结束的比赛，请点击赛程旁的「揭榜」。</p><div class="modal-actions"><button type="button" data-close>关闭</button><button type="button" data-action="settings">添加播放内容 ↗</button></div>');
+    return;
+  }
+  S.video=!S.video;
+  const visibility=read(localStorage,'xcpc-media-visibility',{});
+  visibility[S.active]=S.video;save(localStorage,'xcpc-media-visibility',visibility);renderBanner();
+}
 function renderBanner() {
   const b=board(),s=station();
   if(!s) { $('contestBanner').innerHTML='<div class="loading">正在连接赛站…</div>';return; }
@@ -113,7 +122,7 @@ function renderBanner() {
     const warmup=/warmup|热身/i.test(b.title+s.board_url);
     let status=b.state==='pending'?'尚未开始':b.state==='finished'?'比赛已结束':b.frozen?'已封榜':'比赛进行中';
     const freezeHours=((b.freeze_at-b.start)/3600).toFixed(2).replace(/\.?0+$/,'');
-    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(b.title)}</h2><span class="status-badge ${b.frozen?'frozen':''}">${status}${b.frozen&&b.state==='finished'?' · 封榜保留':''}</span>${warmup?'<span class="status-badge warmup">热身赛预览</span>':''}</div><div class="contest-meta"><span>${date(b.start)}（北京时间）</span><span>赛程 ${minute((b.end-b.start)/3600)} 小时</span><span>${b.revealed?'已手动解封':`开赛 ${freezeHours}h 后封榜`}</span><span>${b.problems.length || b.problem_total?`${b.problem_total??b.problems.length} 道题目${b.problem_reveal?` · 已揭晓 ${b.problems.length} 题`:''}`:'题目待公布'}</span></div></div><div class="contest-right"><div class="contest-clock"><strong id="contestClock"></strong><small id="clockLabel"></small></div><button class="video-toggle ${videoOpen()?'active':''}" data-action="video">${videoOpen()?'收起':'▹'} 直播 / 视频</button></div>`;
+    $('contestBanner').innerHTML=`<div><div class="contest-head"><h2>${esc(b.title)}</h2><span class="status-badge ${b.frozen?'frozen':''}">${status}${b.frozen&&b.state==='finished'?' · 封榜保留':''}</span>${warmup?'<span class="status-badge warmup">热身赛预览</span>':''}</div><div class="contest-meta"><span>${date(b.start)}（北京时间）</span><span>赛程 ${minute((b.end-b.start)/3600)} 小时</span><span>${b.revealed?'已揭榜':`开赛 ${freezeHours}h 后封榜`}</span><span>${b.problems.length || b.problem_total?`${b.problem_total??b.problems.length} 道题目${b.problem_reveal?` · 已揭晓 ${b.problems.length} 题`:''}`:'题目待公布'}</span></div></div><div class="contest-right"><div class="contest-clock"><strong id="contestClock"></strong><small id="clockLabel"></small></div>${b.frozen&&b.state==='finished'?'<button class="video-toggle" data-action="reveal">揭榜</button>':''}<button class="video-toggle ${videoOpen()?'active':''}" data-action="video">${videoOpen()?'收起':'▹'} 直播 / 视频</button></div>`;
     updateClock();
   }
   $('sourceLink').href=s.board_url || 'https://board.xcpcio.com/';
@@ -251,6 +260,18 @@ async function adminSave(data,sid=S.active) {
   if(sid===S.active && S.data) S.data.station=result;
   await refreshCatalog();return result;
 }
+function revealBoard(sid=S.active,source=S.source) {
+  if(sid!==S.active || source!==S.source){toast('榜单已切换，请重新打开揭榜');return;}
+  if(!S.token){login(()=>revealBoard(sid,source));return;}
+  openModal('揭榜','FINAL RESULTS',`<p class="help">显示「${esc(board()?.title || station().title)}」上游已公开的赛后结果，对所有访客生效。请在官方结果公布后操作。</p><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button type="button" class="primary" id="confirmReveal">揭榜，显示最终结果</button></div>`);
+  $('confirmReveal').onclick=async e=>{
+    const button=e.currentTarget;button.disabled=true;
+    try {
+      if(sid!==S.active || source!==S.source)throw Error('榜单已切换，请重新打开揭榜');
+      await adminSave({source,reveal:true},sid);await refresh();closeModal();toast('已揭榜，正在展示上游已公开的结果');
+    } catch(error){errorMessage(error);} finally{button.disabled=false;}
+  };
+}
 function login(after=settings) {
   if(S.token){after();return;}
   openModal('进入赛站管理','ADMIN ACCESS',`<form id="loginForm" class="form-stack"><div class="help">使用服务器上的管理密钥，配置所有访客可见的榜单、直播或视频、公共分组和备注。</div><label class="field">管理密钥<input type="password" id="adminToken" autocomplete="current-password" required autofocus></label><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">进入管理</button></div></form>`);
@@ -259,7 +280,7 @@ function login(after=settings) {
 function settings(newStation=false) {
   if(!S.token){login(()=>settings(newStation));return;}
   const s=newStation?{id:'',title:'',board_url:'',room:'',freeze_after:4,reveal:false}:station();
-  openModal(newStation?'添加一个新赛站':'赛站设置','CONTEST SETTINGS',`<form id="settingsForm" class="form-stack"><div class="form-row">${newStation?'<label class="field">赛站 ID<input id="settingId" placeholder="例如 hangzhou-2027" pattern="[a-z0-9][a-z0-9-]{0,39}" required></label>':''}<label class="field">赛站名称<input id="settingTitle" value="${esc(s.title)}" required maxlength="80" placeholder="例如 ICPC 杭州"></label></div><label class="field">榜单链接（XCPCIO / CCPC）<input type="url" id="settingUrl" value="${esc(s.board_url)}" placeholder="https://board.xcpcio.com/icpc/51st/xian?group=official"><small>支持 board.xcpcio.com 和 rank.iccpc.cn/r/…；可随时替换链接。同一赛事从热身赛切到正式赛时，核对队伍后自动继承分组、备注和个人关注。留空表示等待公布。</small></label><div class="field"><div class="group-heading"><h3>直播 / 视频播放列表</h3><button type="button" id="addMedia">＋ 添加内容</button></div><div id="mediaEditor"></div><small>选填，最多 20 项。支持直播间号、BV/av 号或 B 站完整链接；视频分 P 可用 ?p=2。访客可左右切换并自行打开或收起。</small></div><label class="field">开赛后几小时封榜<input type="number" id="settingFreeze" value="${s.freeze_after}" min="0" max="24" step="0.25" required><small>默认 4 小时；若原榜更早封榜，则跟随原榜。封榜后仍刷新公开提交。</small></label><label class="check-field"><input type="checkbox" id="settingPinned" ${s.pinned?'checked':''}>置顶到赛站列表最左侧（其余按比赛时间从近到远排列）</label><label class="check-field"><input type="checkbox" id="settingReveal" ${s.reveal?'checked':''}><span>手动解封：显示上游已公开的最终结果<br><span class="help">官方滚榜完成后再开启；无法获取上游没有公开的数据。</span></span></label><div id="formError" class="form-error"></div><div class="modal-actions">${!newStation?'<button type="button" id="addStation" class="left">＋ 新增赛站</button>':''}<button type="button" id="adminLogout">退出管理</button><button class="primary" type="submit">保存设置</button></div></form>`);
+  openModal(newStation?'添加一个新赛站':'赛站设置','CONTEST SETTINGS',`<form id="settingsForm" class="form-stack"><div class="form-row">${newStation?'<label class="field">赛站 ID<input id="settingId" placeholder="例如 hangzhou-2027" pattern="[a-z0-9][a-z0-9-]{0,39}" required></label>':''}<label class="field">赛站名称<input id="settingTitle" value="${esc(s.title)}" required maxlength="80" placeholder="例如 ICPC 杭州"></label></div><label class="field">榜单链接（XCPCIO / CCPC）<input type="url" id="settingUrl" value="${esc(s.board_url)}" placeholder="https://board.xcpcio.com/icpc/51st/xian?group=official"><small>支持 board.xcpcio.com 和 rank.iccpc.cn/r/…；可随时替换链接。同一赛事从热身赛切到正式赛时，核对队伍后自动继承分组、备注和个人关注。留空表示等待公布。</small></label><div class="field"><div class="group-heading"><h3>直播 / 视频播放列表</h3><button type="button" id="addMedia">＋ 添加内容</button></div><div id="mediaEditor"></div><small>选填，最多 20 项。支持直播间号、BV/av 号或 B 站完整链接；视频分 P 可用 ?p=2。访客可左右切换并自行打开或收起。</small></div><label class="field">开赛后几小时封榜<input type="number" id="settingFreeze" value="${s.freeze_after}" min="0" max="24" step="0.25" required><small>默认 4 小时；若原榜更早封榜，则跟随原榜。封榜后仍刷新公开提交。</small></label><label class="check-field"><input type="checkbox" id="settingPinned" ${s.pinned?'checked':''}>置顶到赛站列表最左侧（其余按比赛时间从近到远排列）</label><label class="check-field"><input type="checkbox" id="settingReveal" ${s.reveal?'checked':''}><span>手动解封：显示上游已公开的最终结果<br><span class="help">官方滚榜完成后再开启；无法获取上游没有公开的数据。切换到另一榜单会重新启用封榜保护。</span></span></label><div id="formError" class="form-error"></div><div class="modal-actions">${!newStation?'<button type="button" id="addStation" class="left">＋ 新增赛站</button>':''}<button type="button" id="adminLogout">退出管理</button><button class="primary" type="submit">保存设置</button></div></form>`);
   renderMediaEditor(s.media||[]);
   $('addMedia').onclick=()=>{const draft=readMediaEditor();if(draft.length>=20){toast('每站最多 20 项');return;}draft.push({title:'',url:''});renderMediaEditor(draft);$('mediaEditor').lastElementChild.querySelector('[data-media-url]').focus();};
   $('mediaEditor').onclick=e=>{const button=e.target.closest('[data-media-edit]');if(!button)return;const draft=readMediaEditor(),index=Number(button.dataset.index);if(button.dataset.mediaEdit==='delete')draft.splice(index,1);else{const next=index+Number(button.dataset.mediaEdit);[draft[index],draft[next]]=[draft[next],draft[index]];}renderMediaEditor(draft);};
@@ -401,7 +422,8 @@ document.addEventListener('click',e=>{
   const action=e.target.closest('[data-action]')?.dataset.action;
   if(action==='settings')login();
   if(action==='pick-stars')editGroup('stars');
-  if(action==='video'){if(!station()?.media?.length){toast('当前赛站尚未添加播放内容，可在「管理赛站」配置');}else{S.video=!S.video;const visibility=read(localStorage,'xcpc-media-visibility',{});visibility[S.active]=S.video;save(localStorage,'xcpc-media-visibility',visibility);renderBanner();}}
+  if(action==='video')toggleVideo();
+  if(action==='reveal')revealBoard();
   const media=e.target.closest('[data-media-index]');if(media)selectMedia(Number(media.dataset.mediaIndex));
   const step=e.target.closest('[data-media-step]');if(step)selectMedia(Number($('videoPanel').dataset.index)+Number(step.dataset.mediaStep));
   const star=e.target.closest('[data-star]');

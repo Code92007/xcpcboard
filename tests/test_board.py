@@ -152,6 +152,25 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(restarted.config, upgraded.config)
         self.assertEqual(server.board_source(restarted.station('wuhan')['board_url'])[0], 'icpc/51st/wuhan')
 
+    def test_reveal_is_reset_on_source_switch_and_rejects_stale_board_action(self):
+        for sid, url in [('wuhan', 'https://board.xcpcio.com/icpc/51st/wuhan'),
+                         ('girls', 'https://rank.iccpc.cn/r/11111111-1111-4111-8111-111111111111')]:
+            with self.subTest(station=sid):
+                old = self.store.public_station(self.store.station(sid))
+                self.store.update(sid, dict(source=old['source'], reveal=True))
+                self.store.update(sid, dict(title=old['title']))
+                self.assertTrue(self.store.station(sid)['reveal'])
+                # The settings form may still contain the warmup's checked box.
+                self.store.update(sid, dict(board_url=url, reveal=True))
+                self.assertFalse(self.store.station(sid)['reveal'])
+                previous = copy.deepcopy(self.store.config)
+                with self.assertRaisesRegex(ValueError, '榜单已切换'):
+                    self.store.update(sid, dict(source=old['source'], reveal=True))
+                self.assertEqual(self.store.config, previous)
+                new = self.store.public_station(self.store.station(sid))
+                self.store.update(sid, dict(source=new['source'], reveal=True))
+                self.assertTrue(self.store.station(sid)['reveal'])
+
     def test_stations_sort_pinned_first_then_contest_start_with_both_providers(self):
         times = {'xian': 1792224000000, 'chengdu': 1792890600000, 'wuhan': 1793428800000}
         for sid, start in times.items():
