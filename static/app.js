@@ -4,7 +4,7 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const read = (storage, key, fallback) => { try { return JSON.parse(storage.getItem(key)) ?? fallback; } catch { return fallback; } };
 const save = (storage, key, value) => { try { storage.setItem(key, JSON.stringify(value)); return true; } catch { toast('浏览器存储不可用，本次修改仅在当前页面保留'); return false; } };
 const S = {stations:[], active:'', data:null, local:null, token:read(sessionStorage,'xcpc-admin',''), query:'', view:'all', rankGroup:'official', showSeat:read(localStorage,'xcpc-show-seat',true)!==false, queue:[], seen:new Map(), backlog:[], paused:false, queueOnly:false, video:true, mediaSelected:{}, busy:false, source:'', online:true,queueInitialized:false,receivedAt:0};
-let toastTimer, pollTimer, animationTimer, preferenceSignature;
+let toastTimer, pollTimer, animationTimer, preferenceSignature, submissionHistory=null;
 function toast(message) { $('toast').textContent=message; $('toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3500); }
 async function api(path, data, admin=false) {
   const headers = {};
@@ -86,7 +86,7 @@ async function refresh() {
       }
       save(localStorage,'xcpc-snapshot:'+sid,data);
     }
-    render();drainQueue();
+    render();drainQueue();if(submissionHistory)loadSubmissions(submissionHistory);
   } catch(error) {
     if(sid!==S.active)return;
     S.online=false;
@@ -199,11 +199,16 @@ function renderViews() {
   $('rankGroup').innerHTML=rankOptions.map(([id,name])=>`<option value="${esc(id)}" ${S.rankGroup===id?'selected':''}>${esc(name)}</option>`).join('');
   $('queueOnlyView').checked=S.queueOnly;
 }
-function problemCell(p) {
-  if(p.state==='none')return '<div class="problem none">·</div>';
-  if(p.state==='ac')return `<div class="problem ac ${p.first?'first':''}" title="${p.first?'首杀 · ':''}${p.wrong} 次失败，${p.minute} 分钟通过"><span>${p.wrong?'+'+p.wrong:'+'}</span><small>${p.minute} min</small></div>`;
-  if(p.state==='pending'||p.state==='frozen')return `<div class="problem ${p.state}" title="${p.wrong} 次失败，${p.pending} 次待揭晓"><span>? ${p.pending}</span><small>${p.wrong?'-'+p.wrong+' / ':''}${p.state==='frozen'?'封榜':'待判'}</small></div>`;
-  return `<div class="problem wa" title="${p.wrong} 次失败"><span>−${p.wrong}</span></div>`;
+function problemCell(p,team,label) {
+  let content='·',title='尚无提交';
+  if(p.state==='ac') {content=`<span>${p.wrong?'+'+p.wrong:'+'}</span><small>${p.minute} min</small>`;title=`${p.first?'首杀 · ':''}${p.wrong} 次失败，${p.minute} 分钟通过`;}
+  else if(p.state==='pending'||p.state==='frozen') {
+    content=`<span>? ${p.pending}</span><small>${p.wrong?'-'+p.wrong+' / ':''}${p.state==='frozen'?'封榜':'待判'}</small>${p.last_submit_second!=null?`<small class="problem-time">${clock(p.last_submit_second)}</small>`:''}`;
+    title=`${p.wrong} 次失败，${p.pending} 次待揭晓${p.last_submit_second!=null?' · 最后提交 '+clock(p.last_submit_second)+'（开赛后）':''}`;
+  } else if(p.state!=='none') {content=`<span>−${p.wrong}</span>`;title=`${p.wrong} 次失败`;}
+  const classes=`problem ${p.state} ${p.first?'first':''}`;
+  if(!p.history_key)return `<div class="${classes}" title="${esc(title)}">${content}</div>`;
+  return `<button type="button" class="${classes}" data-history="${esc(p.history_key)}" data-history-team="${esc(team.id)}" title="${esc(title)} · 点击查看提交历史" aria-label="${esc(team.name+' · '+label+' · 提交历史')}">${content}</button>`;
 }
 function renderTable() {
   const b=board(),s=station(),wrap=$('tableWrap');
@@ -229,7 +234,7 @@ function renderTable() {
   const hidden=!!b.problem_reveal?.hidden;
   const revealHint=hidden?` · 满 ${b.problem_reveal.threshold} 队通过后揭晓题号；右侧未揭晓题目仅在队内排列`:'';
   $('viewInfo').textContent+=revealHint;
-  wrap.innerHTML=`<table><thead><tr><th class="star-col"></th><th class="rank-col">排名</th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th><th class="solved-col">AC</th><th class="penalty-col">罚时</th>${b.problems.map(p=>`<th><span class="prob-label" style="background:${safeColor(p.color)}">${esc(p.label)}</span><small>${eligible.filter(t=>t.problems[b.problems.indexOf(p)].state==='ac').length} AC</small></th>`).join('')}${hidden?'<th class="hidden-heading">未揭晓题目<small>队内排列 · 无题号</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell"><button class="star ${stars().includes(t.id)?'on':''}" data-star="${esc(t.id)}" title="${stars().includes(t.id)?'取消关注':'加入我的关注'}" aria-label="${stars().includes(t.id)?'取消关注':'关注'} ${esc(t.name)}">${stars().includes(t.id)?'★':'☆'}</button></td><td class="rank">${rankBadge(t)}</td><td class="note-cell"><button class="note-button ${note(t)?'':'blank'}" data-note="${esc(t.id)}" title="编辑群友备注">${note(t)?esc(note(t)):'＋ 添加备注'}</button></td>${S.showSeat?`<td class="seat-cell">${esc(t.location || '—')}</td>`:''}<td class="team-cell" title="${esc(t.id+' · '+t.name+' · '+t.members.join(' / '))}"><div class="team-name">${esc(t.name)}${t.groups.includes('unofficial')?'<span class="unofficial">打星</span>':''}</div><div class="organization">${esc(t.organization || t.location || t.id)}</div></td><td class="solved">${t.solved}</td><td class="penalty">${minute(t.penalty)}</td>${t.problems.map(p=>`<td class="prob-cell">${problemCell(p)}</td>`).join('')}${hidden?`<td class="hidden-cell"><div class="hidden-problems">${(t.hidden_problems||[]).map(p=>problemCell(p)).join('')||'<span class="help">尚无提交</span>'}</div></td>`:''}</tr>`).join('') || `<tr><td colspan="${6+Number(S.showSeat)+b.problems.length+Number(hidden)}"><div class="empty"><h3>${S.query?'没有找到匹配队伍':S.view==='stars'?'还没有关注的队伍':'这个分组还没有队伍'}</h3><p>${S.query?'试试队名、学校或群友备注。':S.view==='stars'?'批量勾选队伍，或从已有分组添加到我的关注。':'在全部队伍中点 ☆，或使用「关注分组」挑选队伍。'}</p>${S.view==='stars'?'<button class="primary" data-action="pick-stars">勾选导入队伍</button>':''}</div></td></tr>`}</tbody></table>`;
+  wrap.innerHTML=`<table><thead><tr><th class="star-col"></th><th class="rank-col">排名</th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th><th class="solved-col">AC</th><th class="penalty-col">罚时</th>${b.problems.map(p=>`<th><span class="prob-label" style="background:${safeColor(p.color)}">${esc(p.label)}</span><small>${eligible.filter(t=>t.problems[b.problems.indexOf(p)].state==='ac').length} AC</small></th>`).join('')}${hidden?'<th class="hidden-heading">未揭晓题目<small>队内排列 · 无题号</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell"><button class="star ${stars().includes(t.id)?'on':''}" data-star="${esc(t.id)}" title="${stars().includes(t.id)?'取消关注':'加入我的关注'}" aria-label="${stars().includes(t.id)?'取消关注':'关注'} ${esc(t.name)}">${stars().includes(t.id)?'★':'☆'}</button></td><td class="rank">${rankBadge(t)}</td><td class="note-cell"><button class="note-button ${note(t)?'':'blank'}" data-note="${esc(t.id)}" title="编辑群友备注">${note(t)?esc(note(t)):'＋ 添加备注'}</button></td>${S.showSeat?`<td class="seat-cell">${esc(t.location || '—')}</td>`:''}<td class="team-cell" title="${esc(t.id+' · '+t.name+' · '+t.members.join(' / '))}"><div class="team-name">${esc(t.name)}${t.groups.includes('unofficial')?'<span class="unofficial">打星</span>':''}</div><div class="organization">${esc(t.organization || t.location || t.id)}</div></td><td class="solved">${t.solved}</td><td class="penalty">${minute(t.penalty)}</td>${t.problems.map((p,i)=>`<td class="prob-cell">${problemCell(p,t,b.problems[i].label)}</td>`).join('')}${hidden?`<td class="hidden-cell"><div class="hidden-problems">${(t.hidden_problems||[]).map(p=>problemCell(p,t,'未揭晓题目')).join('')||'<span class="help">尚无提交</span>'}</div></td>`:''}</tr>`).join('') || `<tr><td colspan="${6+Number(S.showSeat)+b.problems.length+Number(hidden)}"><div class="empty"><h3>${S.query?'没有找到匹配队伍':S.view==='stars'?'还没有关注的队伍':'这个分组还没有队伍'}</h3><p>${S.query?'试试队名、学校或群友备注。':S.view==='stars'?'批量勾选队伍，或从已有分组添加到我的关注。':'在全部队伍中点 ☆，或使用「关注分组」挑选队伍。'}</p>${S.view==='stars'?'<button class="primary" data-action="pick-stars">勾选导入队伍</button>':''}</div></td></tr>`}</tbody></table>`;
 }
 function statusClass(status) {return status==='AC'?'ac':['FROZEN','PENDING'].includes(status)?'pending':['WA','RE','TLE','MLE','OLE','RJ','JE'].includes(status)?'wa':'neutral';}
 function renderQueue(animated=false,newId='') {
@@ -263,8 +268,42 @@ function drainQueue() {
   const event=S.backlog.shift();S.queue=S.queue.filter(e=>e.id!==event.id);S.queue.unshift(event);S.queue=S.queue.slice(0,800);
   renderQueue(true,event.id);animationTimer=setTimeout(drainQueue,S.backlog.length>50?180:650);
 }
-function openModal(title,eyebrow,html) { $('modalTitle').textContent=title;$('modalEyebrow').textContent=eyebrow;$('modalBody').innerHTML=html;if(!$('modal').open)$('modal').showModal(); }
+function openModal(title,eyebrow,html) { submissionHistory=null;$('modal').classList.remove('submission-modal');$('modalBody').onclick=null;$('modalTitle').textContent=title;$('modalEyebrow').textContent=eyebrow;$('modalBody').innerHTML=html;if(!$('modal').open)$('modal').showModal(); }
 function closeModal() { $('modal').close(); }
+const verdictNames={AC:'Accepted',WA:'Wrong Answer',TLE:'Time Limit Exceeded',MLE:'Memory Limit Exceeded',OLE:'Output Limit Exceeded',RE:'Runtime Error',CE:'Compilation Error',PE:'Presentation Error',RJ:'Rejected',JE:'Judgement Failed',FROZEN:'封榜 · Frozen',PENDING:'待判 · Pending'};
+async function showSubmissions(teamId,historyKey) {
+  const team=board()?.teams.find(t=>t.id===teamId);if(!team)return;
+  const index=team.problems.findIndex(p=>p.history_key===historyKey),label=index<0?'未揭晓题目':board().problems[index].label;
+  openModal(team.name+' - '+label,'SUBMISSION HISTORY','<div class="loading" role="status">正在读取提交历史…</div>');
+  $('modal').classList.add('submission-modal');
+  const context={sid:S.active,source:S.source,teamId,historyKey,page:0,data:null,busy:false};submissionHistory=context;
+  $('modalBody').onclick=e=>{
+    if(e.target.closest('[data-history-refresh]'))loadSubmissions(context);
+    const page=e.target.closest('[data-history-page]');if(page&&context.data){context.page=Number(page.dataset.historyPage);renderSubmissions(context);}
+  };
+  await loadSubmissions(context);
+}
+async function loadSubmissions(context) {
+  if(context.busy||submissionHistory!==context)return;
+  context.busy=true;
+  const refreshButton=$('modalBody').querySelector('[data-history-refresh]');if(refreshButton)refreshButton.disabled=true;
+  try {
+    const query=new URLSearchParams({source:context.source,team:context.teamId,problem:context.historyKey});
+    const data=await api(`/api/contests/${encodeURIComponent(context.sid)}/submissions?${query}`);
+    if(submissionHistory!==context||!$('modal').open)return;
+    if(S.active!==context.sid||S.source!==context.source)throw Error('榜单已切换，请重新打开提交历史');
+    context.data=data;renderSubmissions(context);
+  } catch(error) {
+    if(submissionHistory===context&&$('modal').open)$('modalBody').innerHTML=`<div class="empty"><p>${esc(error.message)}</p><button data-history-refresh>重新加载</button></div>`;
+  } finally {context.busy=false;if(submissionHistory===context){const button=$('modalBody').querySelector('[data-history-refresh]');if(button)button.disabled=false;}}
+}
+function renderSubmissions(context) {
+  const d=context.data,pageSize=10,pages=Math.max(1,Math.ceil(d.submissions.length/pageSize));
+  context.page=Math.max(0,Math.min(context.page,pages-1));
+  const offset=context.page*pageSize,rows=d.submissions.slice(offset,offset+pageSize),label=d.problem.label==='?'?'未揭晓题目':d.problem.label;
+  $('modalTitle').textContent=d.team.name+' - '+label;
+  $('modalBody').innerHTML=`<div class="history-summary"><div><strong>${esc(d.team.organization||d.team.id)}</strong><span>共 ${d.total} 次提交 · 按提交时间倒序</span></div><button data-history-refresh>刷新记录</button></div>${d.frozen?'<div class="history-notice">封榜后的记录仅显示封榜状态，结果将在揭榜后显示。</div>':''}<div class="history-table-wrap"><table class="history-table"><thead><tr><th>题目</th><th>学校</th><th>队伍</th><th>状态</th><th>语言</th><th>提交时间</th></tr></thead><tbody>${rows.map(e=>`<tr><td><span class="prob-label" style="background:${safeColor(d.problem.color)}">${esc(d.problem.label)}</span></td><td>${esc(d.team.organization||'—')}</td><td>${esc(d.team.name)}</td><td><span class="history-verdict ${statusClass(e.status)}">${esc(verdictNames[e.status]||e.status)}</span></td><td>${esc(e.language||'—')}</td><td class="history-time" title="北京时间 ${esc(new Date((d.start+e.second)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}))}">${clock(e.second)}</td></tr>`).join('')||'<tr><td colspan="6"><div class="empty">这道题尚无提交</div></td></tr>'}</tbody></table></div><div class="history-footer"><span>${d.total?`${offset+1}–${Math.min(offset+pageSize,d.total)} / ${d.total} 条`:'0 条提交'}<small>提交时间为开赛后时长（时:分:秒）</small></span><div class="history-pages"><button data-history-page="${context.page-1}" ${context.page===0?'disabled':''} aria-label="上一页提交">‹</button><span>${context.page+1} / ${pages}</span><button data-history-page="${context.page+1}" ${context.page===pages-1?'disabled':''} aria-label="下一页提交">›</button></div></div>`;
+}
 function errorMessage(error) { const field=$('formError');if(field)field.textContent=error.message;else toast(error.message); }
 async function adminSave(data,sid=S.active) {
   const result=await api('/api/admin/contests/'+sid,data,true);
@@ -427,7 +466,7 @@ $('manageButton').onclick=()=>login();$('groupButton').onclick=groups;$('followB
 $('refreshButton').onclick=async()=>{await refresh();toast('已读取服务器最新缓存');};
 $('closeModal').onclick=closeModal;
 $('modal').onclick=e=>{if(e.target===$('modal')){const r=$('modal').getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal();}};
-$('modal').addEventListener('close',()=>{$('modalBody').onclick=null;});
+$('modal').addEventListener('close',()=>{$('modalBody').onclick=null;submissionHistory=null;$('modal').classList.remove('submission-modal');});
 document.addEventListener('click',e=>{
   if(e.target.closest('[data-close]'))closeModal();
   const action=e.target.closest('[data-action]')?.dataset.action;
@@ -440,6 +479,7 @@ document.addEventListener('click',e=>{
   const star=e.target.closest('[data-star]');
   if(star&&S.local){const id=star.dataset.star;S.local.stars=stars().includes(id)?stars().filter(x=>x!==id):[...stars(),id];persist();renderViews();renderTable();if(S.queueOnly)renderQueue();}
   const n=e.target.closest('[data-note]');if(n)editNote(n.dataset.note);
+  const cell=e.target.closest('[data-history]');if(cell)showSubmissions(cell.dataset.historyTeam,cell.dataset.history);
 });
 document.addEventListener('keydown',e=>{if(e.key==='/'&&!$('modal').open&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();$('search').focus();}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});

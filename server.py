@@ -264,9 +264,15 @@ def apply_medals(rows, cutoffs):
                               if rank and 'unofficial' not in team['groups'] and rank <= cutoffs.get(medal, 0)), '')
 
 
-def build_board(raw, station, now=None):
+def submission_key(team_id, problem_id):
+    # Team-scoped keys let hidden ICCPC cells open their history without exposing
+    # provider IDs or allowing spectators to align hidden problems across teams.
+    return hashlib.sha256((str(team_id) + '\0' + str(problem_id)).encode()).hexdigest()[:20]
+
+
+def build_board(raw, station, now=None, *, full_events=False):
     if raw.get('provider') == 'iccpc':
-        return build_iccpc(raw, station, now)
+        return build_iccpc(raw, station, now, full_events=full_events)
     now = time.time() if now is None else now
     c = raw['config']
     start, end = epoch(c['start_time']), epoch(c['end_time'])
@@ -300,7 +306,8 @@ def build_board(raw, station, now=None):
         teams[str(t['id'])] = dict(id=str(t['id']), name=localized(t.get('name', t.get('team_name'))),
             organization=orgs.get(str(t.get('organization_id', '')), localized(t.get('organization'))),
             groups=groups, location=str(t.get('location', '')), members=[localized(m.get('name') if isinstance(m, dict) else m) for m in members],
-            solved=0, penalty=0, last_solve=0, problems=[dict(state='none', wrong=0, pending=0, minute=None, first=False) for _ in problems])
+            solved=0, penalty=0, last_solve=0, problems=[dict(state='none', wrong=0, pending=0, minute=None, first=False,
+                last_submit_second=None, history_key=submission_key(t['id'], p['id'])) for p in problems])
     unit = c.get('options', {}).get('submission_timestamp_unit', 'second')
     penalty_mode = c.get('options', {}).get('calculation_of_penalty', 'in_minutes')
     first = {}
@@ -323,7 +330,9 @@ def build_board(raw, station, now=None):
             status_short = 'PENDING'
         team = teams[tid]
         p = team['problems'][pmap[pid]]
-        events.append(dict(id=rid, team_id=tid, problem=problems[pmap[pid]]['label'], status=status_short, second=sec))
+        p['last_submit_second'] = sec
+        events.append(dict(id=rid, team_id=tid, problem=problems[pmap[pid]]['label'], status=status_short, second=sec,
+                           history_key=p['history_key'], language=localized(r.get('language'))))
         if p['state'] == 'ac' or r.get('is_ignore'):
             continue
         if status in AC:
@@ -371,9 +380,10 @@ def build_board(raw, station, now=None):
     for t in rows:
         t['penalty'] = round(t['penalty'] / 60, 2)
     state = 'pending' if now < start else ('finished' if now >= end else ('frozen' if frozen else 'running'))
+    events.sort(key=lambda e: (e['second'], e['id']))
     return dict(title=localized(c.get('contest_name')), start=start, end=end, freeze_at=start + freeze,
                 frozen=frozen, revealed=reveal, state=state, problems=problems, teams=rows,
-                events=sorted(events, key=lambda e: (e['second'], e['id']))[-800:], groups=c.get('group', {}),
+                events=events if full_events else events[-800:], groups=c.get('group', {}),
                 total_runs=len(events), medal_cutoffs=cutoffs, source=source_key(board_source(station['board_url'])[0]))
 
 
@@ -389,15 +399,16 @@ def iccpc_raw(payload, path):
                 contest_group=payload.get('contest_group', []), fetched_at=time.time())
 
 
-def build_iccpc(raw, station, now=None):
+def build_iccpc(raw, station, now=None, *, full_events=False):
     now = time.time() if now is None else now
     def instant(value):
         parsed = datetime.fromisoformat(str(value))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=ZoneInfo(raw.get('time_context', {}).get('wall_clock_timezone', 'Asia/Shanghai')))
         return parsed.timestamp()
-    def cell():
-        return dict(state='none', wrong=0, pending=0, minute=None, first=False)
+    def cell(team_id, pid):
+        return dict(state='none', wrong=0, pending=0, minute=None, first=False,
+                    last_submit_second=None, history_key=submission_key(team_id, pid))
     c, meta = raw['config'], raw['ccpc_meta']
     start, end = instant(c['start_time']), instant(c['end_time'])
     duration = end - start
@@ -434,8 +445,10 @@ def build_iccpc(raw, station, now=None):
         seen.add(rid)
         result = int(r['result'])
         status = 'FROZEN' if result < 0 or (frozen and sec >= freeze) else verdicts.get(result, 'PENDING')
-        events.append(dict(id=rid, team_id=team_id, _pid=pid, status=status, second=sec))
-        p = stats[team_id].setdefault(pid, cell())
+        p = stats[team_id].setdefault(pid, cell(team_id, pid))
+        p['last_submit_second'] = sec
+        events.append(dict(id=rid, team_id=team_id, _pid=pid, status=status, second=sec,
+                           history_key=p['history_key'], language=localized(r.get('language'))))
         if p['state'] == 'ac':
             continue
         if status == 'AC':
@@ -463,7 +476,7 @@ def build_iccpc(raw, station, now=None):
     for team_id, t in teams.items():
         own = stats[team_id]
         for pid in public_ids:
-            p = own.setdefault(pid, cell())
+            p = own.setdefault(pid, cell(team_id, pid))
             if p['state'] == 'ac':
                 p['first'] = p['_last'] == min(accepted[pid].values())
         hidden = [p for pid, p in own.items() if pid not in problem_map and p['state'] != 'none'] if not show_all else []
@@ -505,7 +518,7 @@ def build_iccpc(raw, station, now=None):
     state = 'pending' if now < start else ('finished' if now >= end else ('frozen' if frozen else 'running'))
     return dict(title=c.get('title', ''), start=start, end=end, freeze_at=start + freeze, frozen=frozen,
                 revealed=reveal, state=state, problems=[problem_map[pid] for pid in public_ids], teams=rows,
-                events=events[-800:], total_runs=len(events), medal_cutoffs=cutoffs, source=source_key(raw['path']),
+                events=events if full_events else events[-800:], total_runs=len(events), medal_cutoffs=cutoffs, source=source_key(raw['path']),
                 groups=dict(official='正式队伍', unofficial='打星队伍', girl='女队'),
                 problem_total=int(meta.get('n_problems') or len(raw['problems'])),
                 problem_reveal=dict(threshold=threshold, show_all=show_all, hidden=not show_all))
@@ -870,6 +883,32 @@ class Store:
                     health={**health, 'age': age, 'stale': bool(raw and (health.get('error') or age > POLL * 3)),
                             'configured': bool(path), 'poll_seconds': POLL}, server_time=time.time())
 
+    def submissions(self, sid, source, team_id, history_key):
+        with self.lock:
+            station = copy.deepcopy(self.station(sid))
+            key = source_key(board_source(station['board_url'])[0])
+            raw = self.raw.get(key)
+        if source != key:
+            raise ValueError('榜单已切换，请刷新后重新打开提交历史')
+        if raw is None:
+            raise ValueError('榜单数据尚未公布')
+        # Reuse the scoring adapter's filtering and freeze protection, but retain
+        # the complete history instead of the feed's most recent 800 events.
+        b = build_board(raw, station, full_events=True)
+        team = next((t for t in b['teams'] if t['id'] == team_id), None)
+        if team is None:
+            raise LookupError('队伍不存在')
+        problem = next((b['problems'][i] for i, p in enumerate(team['problems'])
+                        if p['history_key'] == history_key), None)
+        if problem is None:
+            if not any(p['history_key'] == history_key for p in team.get('hidden_problems', [])):
+                raise LookupError('题目不存在，请刷新榜单后重试')
+            problem = dict(label='?', color='#e6e9ef')
+        events = [e for e in reversed(b['events']) if e['team_id'] == team_id and e['history_key'] == history_key]
+        return dict(source=key, team={k:team[k] for k in ['id', 'name', 'organization', 'location']},
+                    problem={k:problem[k] for k in ['label', 'color']}, submissions=events,
+                    total=len(events), start=b['start'], frozen=b['frozen'], server_time=time.time())
+
     def worker(self):
         while True:
             self.wakeup.clear()
@@ -942,6 +981,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, store.payload(path.split('/')[-1], compressed), encoded_gzip=compressed)
             except StopIteration:
                 self.send(404, {'error': '赛站不存在'})
+        elif re.fullmatch(r'/api/contests/[a-z0-9-]+/submissions', path):
+            query = parse_qs(urlsplit(self.path).query)
+            try:
+                self.send(200, store.submissions(path.split('/')[-2], query.get('source', [''])[0],
+                          query.get('team', [''])[0], query.get('problem', [''])[0]))
+            except StopIteration:
+                self.send(404, {'error': '赛站不存在'})
+            except LookupError as exc:
+                self.send(404, {'error': str(exc)})
+            except ValueError as exc:
+                self.send(400, {'error': str(exc)})
         elif path == '/api/admin/session':
             if self.authorized():
                 self.send(200, {'ok': True})
