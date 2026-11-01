@@ -203,7 +203,7 @@ function problemCell(p,team,label) {
   let content='·',title='尚无提交';
   if(p.state==='ac') {content=`<span>${p.wrong?'+'+p.wrong:'+'}</span><small>${p.minute} min</small>`;title=`${p.first?'首杀 · ':''}${p.wrong} 次失败，${p.minute} 分钟通过`;}
   else if(p.state==='pending'||p.state==='frozen') {
-    content=`<span>? ${p.pending}</span><small>${p.wrong?'-'+p.wrong+' / ':''}${p.state==='frozen'?'封榜':'待判'}</small>${p.last_submit_second!=null?`<small class="problem-time">${clock(p.last_submit_second)}</small>`:''}`;
+    content=`<span>? ${p.pending}</span><small>${p.wrong?'-'+p.wrong+' / ':''}${p.state==='frozen'?'封榜':'待判'}</small>${p.last_submit_second!=null?`<small class="problem-time">${Math.floor(p.last_submit_second/60)} min</small>`:''}`;
     title=`${p.wrong} 次失败，${p.pending} 次待揭晓${p.last_submit_second!=null?' · 最后提交 '+clock(p.last_submit_second)+'（开赛后）':''}`;
   } else if(p.state!=='none') {content=`<span>−${p.wrong}</span>`;title=`${p.wrong} 次失败`;}
   const classes=`problem ${p.state} ${p.first?'first':''}`;
