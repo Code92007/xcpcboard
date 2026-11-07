@@ -5,6 +5,7 @@ const read = (storage, key, fallback) => { try { return JSON.parse(storage.getIt
 const save = (storage, key, value) => { try { storage.setItem(key, JSON.stringify(value)); return true; } catch { toast('浏览器存储不可用，本次修改仅在当前页面保留'); return false; } };
 const S = {stations:[], active:'', data:null, local:null, token:read(sessionStorage,'xcpc-admin',''), query:'', view:'all', rankGroup:'official', showSeat:read(localStorage,'xcpc-show-seat',true)!==false, queue:[], seen:new Map(), backlog:[], paused:false, queueOnly:false, video:true, mediaSelected:{}, busy:false, source:'', online:true,queueInitialized:false,receivedAt:0};
 let toastTimer, pollTimer, animationTimer, preferenceSignature, submissionHistory=null;
+let stationOptionIndex=-1, stationOptionMatches=[], stationNavigationSignature='';
 function toast(message) { $('toast').textContent=message; $('toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3500); }
 async function api(path, data, admin=false) {
   const headers = {};
@@ -49,7 +50,59 @@ async function refreshCatalog() {
   renderStations();
 }
 function renderStations() {
-  $('stationTabs').innerHTML=S.stations.map((s,i)=>`<button class="station-tab ${s.id===S.active?'active':''}" data-station="${esc(s.id)}" aria-current="${s.id===S.active?'page':'false'}"><span>${esc(s.title)}</span><small>${s.pinned?'置顶':String(i+1).padStart(2,'0')}</small></button>`).join('');
+  const signature=JSON.stringify([S.active,S.stations.map(s=>[s.id,s.title,s.archived,s.start_time])]);
+  if(signature===stationNavigationSignature)return;
+  stationNavigationSignature=signature;
+  const current=S.stations.filter(s=>!s.archived),past=S.stations.filter(s=>s.archived);
+  const tab=s=>`<button class="station-tab ${s.id===S.active?'active':''}" data-station="${esc(s.id)}" aria-current="${s.id===S.active?'page':'false'}"><span>${esc(s.title)}</span><small>${String(S.stations.indexOf(s)+1).padStart(2,'0')}</small></button>`;
+  $('stationTabs').innerHTML=current.map(tab).join('')||'<span class="no-current-stations">暂无进行中或待开始的赛事</span>';
+  $('pastStationTabs').innerHTML=past.map(tab).join('');
+  $('pastStations').hidden=!past.length;
+  $('pastStationCount').textContent=past.length;
+  const activePast=past.find(s=>s.id===S.active);
+  $('pastStationCurrent').textContent=activePast?'正在查看：'+activePast.title:'';
+  $('pastStations').classList.toggle('has-active-station',!!activePast);
+  if(!$('stationOptions').hidden)renderStationOptions();
+}
+function renderStationOptions() {
+  const query=$('stationSearch').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  stationOptionMatches=S.stations.filter(s=>query.every(word=>`${s.title} ${s.id} ${s.start_time?date(s.start_time):''}`.toLowerCase().includes(word)))
+    .sort((a,b)=>Number(!!a.archived)-Number(!!b.archived));
+  stationOptionIndex=Math.min(stationOptionIndex,stationOptionMatches.length-1);
+  if(stationOptionIndex<0&&stationOptionMatches.length)stationOptionIndex=0;
+  const option=s=>{
+    return `<button type="button" id="stationOption-${esc(s.id)}" class="station-option" role="option" tabindex="-1" aria-selected="false" data-station-option="${esc(s.id)}"><span>${esc(s.title)}<small>${s.start_time?esc(date(s.start_time))+' · ':''}${s.archived?'往期赛事':'当前赛事'}</small></span>${s.id===S.active?'<span class="station-option-current">正在查看</span>':''}</button>`;
+  };
+  $('stationOptions').innerHTML=[false,true].map(past=>{
+    const rows=stationOptionMatches.filter(s=>!!s.archived===past);
+    return rows.length?`<div class="station-option-group" role="presentation">${past?'往期赛事':'当前赛事'}</div>${rows.map(option).join('')}`:'';
+  }).join('')||'<div class="station-options-empty" role="presentation">没有匹配赛站，试试城市名称。</div>';
+  highlightStationOption();
+}
+function highlightStationOption() {
+  const selected=stationOptionMatches[stationOptionIndex];
+  for(const option of $('stationOptions').querySelectorAll('[data-station-option]')) {
+    const focused=option.dataset.stationOption===selected?.id;
+    option.classList.toggle('focused',focused);option.setAttribute('aria-selected',String(focused));
+  }
+  if(selected)$('stationSearch').setAttribute('aria-activedescendant','stationOption-'+selected.id);
+  else $('stationSearch').removeAttribute('aria-activedescendant');
+}
+function openStationJump() {
+  $('stationOptions').hidden=false;$('stationSearch').setAttribute('aria-expanded','true');renderStationOptions();
+}
+function closeStationJump() {
+  $('stationOptions').hidden=true;$('stationSearch').setAttribute('aria-expanded','false');
+  $('stationSearch').removeAttribute('aria-activedescendant');$('stationSearch').value='';stationOptionIndex=-1;
+}
+function jumpToStation(sid) {
+  if(!S.stations.some(s=>s.id===sid))return;
+  closeStationJump();
+  if(sid!==S.active)switchStation(sid);
+  const archived=S.stations.find(s=>s.id===sid)?.archived;
+  const target=archived&&!$('pastStations').open?$('pastStations').querySelector('summary'):
+    [...$('stationNavigation').querySelectorAll('[data-station]')].find(button=>button.dataset.station===sid);
+  target?.focus({preventScroll:true});
 }
 async function switchStation(sid) {
   S.active=sid; S.data=null; S.source=''; S.video=read(localStorage,'xcpc-media-visibility',{})[sid]??true; S.query=''; $('search').value='';
@@ -330,7 +383,7 @@ function login(after=settings) {
 function settings(newStation=false) {
   if(!S.token){login(()=>settings(newStation));return;}
   const s=newStation?{id:'',title:'',board_url:'',room:'',freeze_after:4,reveal:false}:station();
-  openModal(newStation?'添加一个新赛站':'赛站设置','CONTEST SETTINGS',`<form id="settingsForm" class="form-stack"><div class="form-row">${newStation?'<label class="field">赛站 ID<input id="settingId" placeholder="例如 hangzhou-2027" pattern="[a-z0-9][a-z0-9-]{0,39}" required></label>':''}<label class="field">赛站名称<input id="settingTitle" value="${esc(s.title)}" required maxlength="80" placeholder="例如 ICPC 杭州"></label></div><label class="field">榜单链接（XCPCIO / CCPC）<input type="url" id="settingUrl" value="${esc(s.board_url)}" placeholder="https://board.xcpcio.com/icpc/51st/xian?group=official"><small>支持 board.xcpcio.com 和 rank.iccpc.cn/r/…；可随时替换链接。同一赛事从热身赛切到正式赛时，核对队伍后自动继承分组、备注和个人关注。留空表示等待公布。</small></label><div class="field"><div class="group-heading"><h3>直播 / 视频播放列表</h3><button type="button" id="addMedia">＋ 添加内容</button></div><div id="mediaEditor"></div><small>选填，最多 20 项。支持直播间号、BV/av 号或 B 站完整链接；视频分 P 可用 ?p=2。访客可左右切换并自行打开或收起。</small></div><label class="field">开赛后几小时封榜<input type="number" id="settingFreeze" value="${s.freeze_after}" min="0" max="24" step="0.25" required><small>默认 4 小时；若原榜更早封榜，则跟随原榜。封榜后仍刷新公开提交。</small></label><label class="check-field"><input type="checkbox" id="settingPinned" ${s.pinned?'checked':''}>置顶到赛站列表最左侧（其余按比赛时间从近到远排列）</label><label class="check-field"><input type="checkbox" id="settingReveal" ${s.reveal?'checked':''}><span>手动解封：显示上游已公开的最终结果<br><span class="help">官方滚榜完成后再开启；无法获取上游没有公开的数据。切换到另一榜单会重新启用封榜保护。</span></span></label><div id="formError" class="form-error"></div><div class="modal-actions">${!newStation?'<button type="button" id="addStation" class="left">＋ 新增赛站</button>':''}<button type="button" id="adminLogout">退出管理</button><button class="primary" type="submit">保存设置</button></div></form>`);
+  openModal(newStation?'添加一个新赛站':'赛站设置','CONTEST SETTINGS',`<form id="settingsForm" class="form-stack"><div class="form-row">${newStation?'<label class="field">赛站 ID<input id="settingId" placeholder="例如 hangzhou-2027" pattern="[a-z0-9][a-z0-9-]{0,39}" required></label>':''}<label class="field">赛站名称<input id="settingTitle" value="${esc(s.title)}" required maxlength="80" placeholder="例如 ICPC 杭州"></label></div><label class="field">榜单链接（XCPCIO / CCPC）<input type="url" id="settingUrl" value="${esc(s.board_url)}" placeholder="https://board.xcpcio.com/icpc/51st/xian?group=official"><small>支持 board.xcpcio.com 和 rank.iccpc.cn/r/…；可随时替换链接。同一赛事从热身赛切到正式赛时，核对队伍后自动继承分组、备注和个人关注。留空表示等待公布。</small></label><div class="field"><div class="group-heading"><h3>直播 / 视频播放列表</h3><button type="button" id="addMedia">＋ 添加内容</button></div><div id="mediaEditor"></div><small>选填，最多 20 项。支持直播间号、BV/av 号或 B 站完整链接；视频分 P 可用 ?p=2。访客可左右切换并自行打开或收起。</small></div><label class="field">开赛后几小时封榜<input type="number" id="settingFreeze" value="${s.freeze_after}" min="0" max="24" step="0.25" required><small>默认 4 小时；若原榜更早封榜，则跟随原榜。封榜后仍刷新公开提交。</small></label><label class="field">赛站展示<select id="settingArchive"><option value="auto" ${(s.archive_mode||'auto')==='auto'?'selected':''}>自动：比赛结束后收入往期赛事</option><option value="current" ${s.archive_mode==='current'?'selected':''}>保留在当前赛事</option><option value="past" ${s.archive_mode==='past'?'selected':''}>收入往期赛事</option></select><small>各组内按开赛时间从近到远排列。正赛链接待发布时，可先将热身赛保留在当前赛事。</small></label><label class="check-field"><input type="checkbox" id="settingReveal" ${s.reveal?'checked':''}><span>手动解封：显示上游已公开的最终结果<br><span class="help">官方滚榜完成后再开启；无法获取上游没有公开的数据。切换到另一榜单会重新启用封榜保护。</span></span></label><div id="formError" class="form-error"></div><div class="modal-actions">${!newStation?'<button type="button" id="addStation" class="left">＋ 新增赛站</button>':''}<button type="button" id="adminLogout">退出管理</button><button class="primary" type="submit">保存设置</button></div></form>`);
   renderMediaEditor(s.media||[]);
   $('addMedia').onclick=()=>{const draft=readMediaEditor();if(draft.length>=20){toast('每站最多 20 项');return;}draft.push({title:'',url:''});renderMediaEditor(draft);$('mediaEditor').lastElementChild.querySelector('[data-media-url]').focus();};
   $('mediaEditor').onclick=e=>{const button=e.target.closest('[data-media-edit]');if(!button)return;const draft=readMediaEditor(),index=Number(button.dataset.index);if(button.dataset.mediaEdit==='delete')draft.splice(index,1);else{const next=index+Number(button.dataset.mediaEdit);[draft[index],draft[next]]=[draft[next],draft[index]];}renderMediaEditor(draft);};
@@ -338,7 +391,7 @@ function settings(newStation=false) {
   $('adminLogout').onclick=()=>{S.token='';sessionStorage.removeItem('xcpc-admin');closeModal();renderStatus();toast('已退出管理');};
   $('settingsForm').onsubmit=async e=>{
     e.preventDefault();const button=e.submitter;button.disabled=true;
-    try {const sid=newStation?$('settingId').value.trim():S.active;await adminSave({title:$('settingTitle').value,board_url:$('settingUrl').value,pinned:$('settingPinned').checked,media:readMediaEditor(),freeze_after:Number($('settingFreeze').value),reveal:$('settingReveal').checked},sid);closeModal();toast('已保存，后台开始同步数据');if(sid!==S.active)await switchStation(sid);else await refresh();}
+    try {const sid=newStation?$('settingId').value.trim():S.active;await adminSave({title:$('settingTitle').value,board_url:$('settingUrl').value,archive_mode:$('settingArchive').value,media:readMediaEditor(),freeze_after:Number($('settingFreeze').value),reveal:$('settingReveal').checked},sid);closeModal();toast('已保存，后台开始同步数据');if(sid!==S.active)await switchStation(sid);else await refresh();}
     catch(error){errorMessage(error);}finally{button.disabled=false;}
   };
 }
@@ -455,7 +508,26 @@ function deleteGroup(scope,id) {
   openModal('删除分组','REMOVE GROUP',`<p class="help">删除「${esc(g.name)}」${scope==='public'?'将对所有访客生效':''}。队伍和备注会保留。</p><div class="modal-actions"><button id="cancelDelete">取消</button><button id="confirmDelete" class="danger">删除分组</button></div>`);
   $('cancelDelete').onclick=groups;$('confirmDelete').onclick=async()=>{try{if(scope==='public')await adminSave({source:S.source,public_groups:list.filter(x=>x.id!==id)});else S.local.groups=list.filter(x=>x.id!==id);if(S.view===(scope==='public'?'pub:':'local:')+id)S.view='all';persist();groups();renderViews();renderTable();renderQueue();}catch(error){toast(error.message);}};
 }
-$('stationTabs').onclick=e=>{const b=e.target.closest('[data-station]');if(b&&b.dataset.station!==S.active)switchStation(b.dataset.station);};
+$('stationNavigation').onclick=e=>{const b=e.target.closest('[data-station]');if(b&&b.dataset.station!==S.active){closeStationJump();switchStation(b.dataset.station);}};
+$('stationSearch').onfocus=openStationJump;
+$('stationSearch').onclick=()=>{if($('stationOptions').hidden)openStationJump();};
+$('stationSearch').oninput=()=>{stationOptionIndex=-1;openStationJump();};
+$('stationSearch').onkeydown=e=>{
+  if(e.isComposing)return;
+  if(e.key==='Escape'){e.preventDefault();closeStationJump();return;}
+  if(e.key==='Tab'){closeStationJump();return;}
+  if(e.key==='ArrowDown'||e.key==='ArrowUp') {
+    e.preventDefault();
+    if($('stationOptions').hidden){openStationJump();return;}
+    const count=stationOptionMatches.length;if(!count)return;
+    stationOptionIndex=(stationOptionIndex+(e.key==='ArrowDown'?1:-1)+count)%count;highlightStationOption();
+    document.getElementById('stationOption-'+stationOptionMatches[stationOptionIndex].id)?.scrollIntoView({block:'nearest'});
+  }
+  if(e.key==='Enter') {e.preventDefault();const selected=stationOptionMatches[stationOptionIndex];if(!$('stationOptions').hidden&&selected)jumpToStation(selected.id);}
+};
+$('stationOptions').onmousedown=e=>e.preventDefault();
+$('stationOptions').onclick=e=>{const option=e.target.closest('[data-station-option]');if(option)jumpToStation(option.dataset.stationOption);};
+$('stationJump').addEventListener('focusout',e=>{if(!$('stationJump').contains(e.relatedTarget))closeStationJump();});
 $('viewTabs').onclick=e=>{const b=e.target.closest('[data-view]');if(!b)return;S.view=b.dataset.view;persist();renderViews();renderTable();renderQueue();};
 $('search').oninput=e=>{S.query=e.target.value.trim();renderTable();};
 $('rankGroup').onchange=e=>{S.rankGroup=e.target.value;persist();renderTable();renderQueue();};
@@ -468,6 +540,7 @@ $('closeModal').onclick=closeModal;
 $('modal').onclick=e=>{if(e.target===$('modal')){const r=$('modal').getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal();}};
 $('modal').addEventListener('close',()=>{$('modalBody').onclick=null;submissionHistory=null;$('modal').classList.remove('submission-modal');});
 document.addEventListener('click',e=>{
+  if(!$('stationJump').contains(e.target))closeStationJump();
   if(e.target.closest('[data-close]'))closeModal();
   const action=e.target.closest('[data-action]')?.dataset.action;
   if(action==='settings')login();

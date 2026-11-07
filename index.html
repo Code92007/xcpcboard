@@ -18,7 +18,19 @@
   </header>
   <main>
     <div class="page-heading"><div><div class="eyebrow">THE CONTEST, TOGETHER</div><h1>每一次 AC，都值得围观<span>.</span></h1><p>给熟悉的队伍留个位置，和群友一起等下一颗气球。</p></div><div class="page-mark">XCPC <span>2026</span></div></div>
-    <nav class="station-tabs" id="stationTabs" aria-label="切换赛站"></nav>
+    <nav class="station-navigation" id="stationNavigation" aria-label="切换赛站">
+      <div class="station-navigation-top">
+        <div class="station-tabs" id="stationTabs" aria-label="当前赛事"></div>
+        <div class="station-jump" id="stationJump">
+          <label class="station-jump-field"><span>跳转赛站</span><input id="stationSearch" type="search" role="combobox" aria-label="搜索或选择赛站" aria-autocomplete="list" aria-expanded="false" aria-controls="stationOptions" placeholder="输入名称或选择赛站…" autocomplete="off" spellcheck="false"><span class="station-jump-arrow" aria-hidden="true">⌄</span></label>
+          <div class="station-options" id="stationOptions" role="listbox" aria-label="全部赛站" hidden></div>
+        </div>
+      </div>
+      <details class="past-stations" id="pastStations" hidden>
+        <summary><span>往期赛事 <small id="pastStationCount"></small></span><span class="past-station-current" id="pastStationCurrent"></span><span class="past-station-toggle" aria-hidden="true"></span></summary>
+        <div class="station-tabs past-station-tabs" id="pastStationTabs" aria-label="往期赛事"></div>
+      </details>
+    </nav>
     <section class="contest-banner" id="contestBanner"><div class="loading">正在连接赛站…</div></section>
     <section class="video-panel" id="videoPanel" hidden></section>
     <div class="workspace">

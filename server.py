@@ -40,7 +40,7 @@ NANJING_STATION = dict(id='nanjing', title='ICPC 南京',
 LESHAN_STATION = dict(id='leshan', title='CCPC 乐山（热身赛，正赛待发布）',
                       board_url='https://rank.iccpc.cn/r/a3bce2bc-1c4d-4b81-af38-fa51badaeec2',
                       warmup_board_url='https://rank.iccpc.cn/r/a3bce2bc-1c4d-4b81-af38-fa51badaeec2',
-                      room='', freeze_after=4, reveal=False, profiles={})
+                      room='', freeze_after=4, reveal=False, archive_mode='current', profiles={})
 AC = {'AC', 'OK', 'CORRECT', 'ACCEPTED'}
 PENDING = {'PD', 'PENDING', 'WAITING', 'COMPILING', 'JUDGING', 'FROZEN'}
 REJECTED = {'WA', 'WRONG_ANSWER', 'RJ', 'REJECTED', 'INCORRECT', 'NO', 'NO_OUTPUT',
@@ -605,6 +605,11 @@ class Store:
                     if not any(s['id'] == default['id'] for s in self.config['contests']):
                         self.config['contests'].append(copy.deepcopy(default))
                         changed = True
+                for station in self.config['contests']:
+                    if (station['id'] == 'leshan' and station['board_url'] == LESHAN_STATION['board_url']
+                            and 'archive_mode' not in station):
+                        station['archive_mode'] = 'current'
+                        changed = True
                 if changed:
                     atomic_json(self.config_path, self.config)
         else:
@@ -704,17 +709,21 @@ class Store:
                     dict(id=iccpc_team_id(t['id']), name=localized(t.get('name', t.get('team_name'))),
                          organization=localized(t.get('school', t.get('organization'))),
                          location=iccpc_team_id(t['id'])) for t in entries(old['teams'])])
-        start = None
+        start, end = None, None
         if raw:
-            value = raw.get('config', {}).get('start_time')
-            if value is not None:
+            def contest_time(field):
+                value = raw.get('config', {}).get(field)
+                if value is None:
+                    return None
                 if raw.get('provider') == 'iccpc':
                     parsed = datetime.fromisoformat(str(value))
                     if parsed.tzinfo is None:
                         parsed = parsed.replace(tzinfo=ZoneInfo(raw.get('time_context', {}).get('wall_clock_timezone', 'Asia/Shanghai')))
-                    start = parsed.timestamp()
-                else:
-                    start = epoch(value)
+                    return parsed.timestamp()
+                return epoch(value)
+            start, end = contest_time('start_time'), contest_time('end_time')
+        archive_mode = station.get('archive_mode', 'auto')
+        archived = archive_mode == 'past' or (archive_mode == 'auto' and end is not None and end <= time.time())
         links = copy.deepcopy(self.preference_sources(path))
         for link in links:
             previous = station.get('profiles', {}).get(link['source'], {})
@@ -724,7 +733,8 @@ class Store:
                 if len(matches) == 1:
                     link['public_group_map'][old['id']] = matches[0]['id']
         return {**{k: v for k, v in station.items() if k != 'profiles'}, 'source': source_key(path), 'media': station_media(station),
-                'pinned': station.get('pinned', station['id'] == 'wuhan'), 'start_time': start,
+                'pinned': station.get('pinned', station['id'] == 'wuhan'), 'start_time': start, 'end_time': end,
+                'archive_mode': archive_mode, 'archived': archived,
                 'preference_sources': links, 'preference_preview': preview,
                 'upstream_group': group, 'notes': profile.get('notes', {}),
                 'public_groups': profile.get('public_groups', []), 'default_group': profile.get('default_group', 'all')}
@@ -732,11 +742,7 @@ class Store:
     def stations(self):
         with self.lock:
             stations = [self.public_station(s) for s in self.config['contests']]
-            stations.sort(key=lambda s: (not s['pinned'], -(s['start_time'] or 0)))
-            girls = next((s for s in stations if s['id'] == 'girls'), None)
-            if girls is not None:
-                stations.remove(girls)
-                stations.insert(min(1, len(stations)), girls)
+            stations.sort(key=lambda s: -(s['start_time'] or 0))
             return stations
 
     def station(self, sid):
@@ -761,6 +767,10 @@ class Store:
                 if not isinstance(data['pinned'], bool):
                     raise ValueError('置顶选项格式错误')
                 station['pinned'] = data['pinned']
+            if 'archive_mode' in data:
+                if data['archive_mode'] not in ('auto', 'current', 'past'):
+                    raise ValueError('请选择自动归档、保留在当前赛事或收入往期赛事')
+                station['archive_mode'] = data['archive_mode']
             if 'board_url' in data:
                 station['board_url'] = board_source(data['board_url'])[1]
             if 'room' in data:

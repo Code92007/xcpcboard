@@ -149,8 +149,7 @@ class PersistenceTests(unittest.TestCase):
         server.atomic_json(self.store.config_path, previous)
         upgraded = server.Store(self.temp.name)
         self.assertEqual(upgraded.config['contests'][:-1], previous['contests'])
-        self.assertEqual(upgraded.stations()[0]['id'], 'wuhan')
-        self.assertTrue(upgraded.stations()[0]['pinned'])
+        self.assertTrue(upgraded.station('wuhan')['pinned'])
         upgraded.update('wuhan', dict(board_url='https://board.xcpcio.com/icpc/51st/wuhan'))
         restarted = server.Store(self.temp.name)
         self.assertEqual(restarted.config, upgraded.config)
@@ -177,8 +176,9 @@ class PersistenceTests(unittest.TestCase):
                 self.store.update(sid, dict(source=new['source'], reveal=True))
                 self.assertTrue(self.store.station(sid)['reveal'])
 
-    def test_stations_keep_girls_second_then_sort_others_by_pinned_and_start(self):
-        times = {'xian': 1792224000000, 'chengdu': 1792890600000, 'wuhan': 1793428800000}
+    def test_stations_sort_by_time_without_legacy_pin_or_girls_position(self):
+        times = {'xian': 1792224000000, 'chengdu': 1792890600000, 'wuhan': 1793498400000,
+                 'nanjing': 1794101400000}
         for sid, start in times.items():
             path = server.board_source(self.store.station(sid)['board_url'])[0]
             self.store.raw[server.source_key(path)] = dict(config=dict(start_time=start))
@@ -188,21 +188,64 @@ class PersistenceTests(unittest.TestCase):
         path = server.board_source(self.store.station('girls')['board_url'])[0]
         self.store.raw[server.source_key(path)] = dict(provider='iccpc', config=dict(start_time='2026-10-31 15:00:00'),
                                                      time_context=dict(wall_clock_timezone='Asia/Shanghai'))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'chengdu', 'changchun', 'xian', 'nanjing', 'leshan'])
+        path = server.board_source(self.store.station('leshan')['board_url'])[0]
+        self.store.raw[server.source_key(path)] = dict(provider='iccpc', config=dict(start_time='2026-11-07 15:00:00'),
+                                                     time_context=dict(wall_clock_timezone='Asia/Shanghai'))
+        expected = ['nanjing', 'leshan', 'wuhan', 'girls', 'chengdu', 'changchun', 'xian']
+        self.assertEqual([s['id'] for s in self.store.stations()], expected)
         self.store.update('xian', dict(pinned=True))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'xian', 'chengdu', 'changchun', 'nanjing', 'leshan'])
+        self.assertEqual([s['id'] for s in self.store.stations()], expected)
         self.store.update('wuhan', dict(pinned=False))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['xian', 'girls', 'wuhan', 'chengdu', 'changchun', 'nanjing', 'leshan'])
+        self.assertEqual([s['id'] for s in self.store.stations()], expected)
         before = copy.deepcopy(self.store.config)
         with self.assertRaises(ValueError):
             self.store.update('wuhan', dict(pinned='false'))
         self.assertEqual(self.store.config, before)
 
-    def test_girls_stays_second_without_formal_data_and_after_restart(self):
-        expected = ['wuhan', 'girls', 'xian', 'changchun', 'chengdu', 'nanjing', 'leshan']
+    def test_unpublished_stations_keep_stable_order_after_restart(self):
+        expected = ['xian', 'changchun', 'chengdu', 'wuhan', 'girls', 'nanjing', 'leshan']
         self.assertEqual([s['id'] for s in self.store.stations()], expected)
         self.assertIsNone(self.store.board('girls')['board'])
         self.assertEqual([s['id'] for s in server.Store(self.temp.name).stations()], expected)
+
+    def test_finished_stations_archive_at_end_with_manual_override(self):
+        station = self.store.station('nanjing')
+        path = server.board_source(station['board_url'])[0]
+        self.store.raw[server.source_key(path)] = fixture()
+        for now, expected in [(START + 17999, False), (START + 18000, True)]:
+            with patch('server.time.time', return_value=now):
+                public = self.store.public_station(station)
+                self.assertEqual(public['archived'], expected)
+                self.assertEqual(public['end_time'], START + 18000)
+        with patch('server.time.time', return_value=START + 20000):
+            self.assertFalse(self.store.update('nanjing', dict(archive_mode='current'))['archived'])
+            self.assertTrue(self.store.update('nanjing', dict(archive_mode='auto'))['archived'])
+        with patch('server.time.time', return_value=START - 60):
+            self.assertTrue(self.store.update('nanjing', dict(archive_mode='past'))['archived'])
+        before = copy.deepcopy(self.store.config)
+        with self.assertRaises(ValueError):
+            self.store.update('nanjing', dict(archive_mode='invalid'))
+        self.assertEqual(self.store.config, before)
+
+    def test_iccpc_archive_uses_shanghai_time_and_retains_pending_leshan(self):
+        for sid in ['girls', 'leshan']:
+            station = self.store.station(sid)
+            path = server.board_source(station['board_url'])[0]
+            self.store.raw[server.source_key(path)] = dict(provider='iccpc', config=dict(
+                start_time='2026-11-07 15:00:00', end_time='2026-11-07 17:00:00'),
+                time_context=dict(wall_clock_timezone='Asia/Shanghai'))
+        end = server.datetime(2026, 11, 7, 17, tzinfo=server.ZoneInfo('Asia/Shanghai')).timestamp()
+        with patch('server.time.time', return_value=end):
+            self.assertTrue(self.store.public_station(self.store.station('girls'))['archived'])
+            self.assertFalse(self.store.public_station(self.store.station('leshan'))['archived'])
+        config = copy.deepcopy(self.store.config)
+        leshan = next(s for s in config['contests'] if s['id'] == 'leshan')
+        del leshan['archive_mode']
+        server.atomic_json(self.store.config_path, config)
+        restored = server.Store(self.temp.name)
+        self.assertEqual(restored.station('leshan')['archive_mode'], 'current')
+        restored.update('leshan', dict(archive_mode='auto'))
+        self.assertEqual(server.Store(self.temp.name).station('leshan')['archive_mode'], 'auto')
 
     def test_public_notes_groups_and_source_isolation_across_restart(self):
         s=self.store.public_station(self.store.station('xian'))
