@@ -4,8 +4,9 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const read = (storage, key, fallback) => { try { return JSON.parse(storage.getItem(key)) ?? fallback; } catch { return fallback; } };
 const save = (storage, key, value) => { try { storage.setItem(key, JSON.stringify(value)); return true; } catch { toast('浏览器存储不可用，本次修改仅在当前页面保留'); return false; } };
 const S = {stations:[], active:'', data:null, local:null, token:read(sessionStorage,'xcpc-admin',''), query:'', view:'all', rankGroup:'official', showSeat:read(localStorage,'xcpc-show-seat',true)!==false, showCf:read(localStorage,'xcpc-show-cf',true)!==false, queue:[], seen:new Map(), backlog:[], paused:false, queueOnly:false, video:true, mediaSelected:{}, busy:false, source:'', online:true,queueInitialized:false,receivedAt:0};
-let toastTimer, pollTimer, animationTimer, preferenceSignature, submissionHistory=null;
+let toastTimer, pollTimer, animationTimer, preferenceSignature, submissionHistory=null, cfRefreshTimer, cfRefreshUntil=0;
 let stationOptionIndex=-1, stationOptionMatches=[], stationNavigationSignature='';
+let cfVisitPending=false, cfFirstVisitDone=false;
 function toast(message) { $('toast').textContent=message; $('toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3500); }
 async function api(path, data, admin=false) {
   const headers = {};
@@ -44,6 +45,27 @@ function date(sec) { return new Date(sec*1000).toLocaleString('zh-CN',{timeZone:
 function timeOf(sec) { return new Date(sec*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}); }
 function safeColor(value) { return /^#[0-9a-f]{3,8}$/i.test(value)?value:'#edf1e6'; }
 
+function watchCfSync() {
+  clearTimeout(cfRefreshTimer);
+  const pending=Object.values(station()?.cf_users||{}).some(user=>user.syncing);
+  if(!pending){cfRefreshUntil=0;return;}
+  if(!cfRefreshUntil)cfRefreshUntil=Date.now()+60000;
+  if(!document.hidden&&Date.now()<cfRefreshUntil)cfRefreshTimer=setTimeout(refresh,2000);
+}
+
+async function firstCfVisit() {
+  const key='xcpc-cf-first-visit-v1';
+  if(cfFirstVisitDone||cfVisitPending||read(localStorage,key,false))return;
+  cfVisitPending=true;
+  try {
+    const response=await fetch('/api/codeforces/visit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(8000)});
+    if(!response.ok)return;
+    const result=await response.json();cfFirstVisitDone=true;save(localStorage,key,true);
+    if(result.queued)await refresh();
+  }catch{} // Scoreboard loading continues when offline.
+  finally{cfVisitPending=false;}
+}
+
 function cfCell(team) {
   if(!S.showCf)return '';
   const bindings=station()?.cf_bindings?.[team.id]||[], users=station()?.cf_users||{};
@@ -51,9 +73,9 @@ function cfCell(team) {
     const user=users[binding.handle.toLowerCase()]||{},handle=user.handle||binding.handle;
     const level=XCPCPreferences.cfLevel(user.rating);
     const label=level==='legendary'?`<span class="cf-first">${esc(handle.slice(0,1))}</span>${esc(handle.slice(1))}`:esc(handle);
-    const rating=Number.isFinite(user.rating)?String(user.rating):user.error||(user.updated_at?'未评级':'待同步');
-    const detail=binding.member+' · '+rating+(user.stale&&user.updated_at?' · 缓存，等待更新':'')+(user.updated_at?' · 更新于 '+date(user.updated_at):'');
-    return `<div class="cf-entry" title="${esc(detail)}"><a class="cf-handle cf-${level}" href="https://codeforces.com/profile/${encodeURIComponent(handle)}" target="_blank" rel="noopener noreferrer">${label}</a><small>${esc(binding.member)} · ${esc(rating)}${user.stale&&user.updated_at?' ↻':''}</small></div>`;
+    const rating=Number.isFinite(user.rating)?String(user.rating):user.syncing?'同步中…':user.error||(user.updated_at?'未评级':'待同步');
+    const detail=binding.member+' · '+rating+(user.syncing?' · 正在同步':user.stale&&user.updated_at?' · 缓存，等待更新':'')+(user.updated_at?' · 更新于 '+date(user.updated_at):'');
+    return `<div class="cf-entry" title="${esc(detail)}"><a class="cf-handle cf-${level}" href="https://codeforces.com/profile/${encodeURIComponent(handle)}" target="_blank" rel="noopener noreferrer">${label}</a><small>${esc(binding.member)} · ${esc(rating)}${(user.syncing||user.stale)&&user.updated_at?' ↻':''}</small></div>`;
   }).join('');
   return `<td class="cf-cell">${entries||'<span class="cf-empty">—</span>'}${S.token&&board()?`<button class="cf-edit" data-cf="${esc(team.id)}" aria-label="绑定 ${esc(team.name)} 的 CF 账号">${bindings.length?'编辑':'＋ 绑定账号'}</button>`:''}</td>`;
 }
@@ -67,13 +89,13 @@ function editCf(tid) {
     const binding=bindings[i]||{};
     return `<div class="form-row cf-binding-row"><label class="field">队员 ${i+1}${roster.length?`<select data-cf-member><option value="">选择队员</option>${roster.map(m=>`<option value="${esc(m)}" ${m===binding.member?'selected':''}>${esc(m)}</option>`).join('')}</select>`:`<input data-cf-member value="${esc(binding.member||'')}" maxlength="80" placeholder="队员姓名">`}</label><label class="field">CF 账号<input data-cf-handle value="${esc(binding.handle||'')}" maxlength="24" placeholder="例如 tourist" autocomplete="off" autocapitalize="off" spellcheck="false"></label></div>`;
   };
-  openModal('绑定队员的 CF 账号','CODEFORCES',`<form id="cfForm" class="form-stack"><div class="help">${esc(team.name)} · ${esc(team.organization)}<br>每位队员一个账号，每队最多三个。绑定对所有访客可见；清空一行可移除绑定。</div>${[0,1,2].map(row).join('')}<p class="help">颜色按当前 CF rating 显示，每小时自动更新；点击账号可打开 CF 主页。</p><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button type="submit" class="primary">保存绑定</button></div></form>`);
+  openModal('绑定队员的 CF 账号','CODEFORCES',`<form id="cfForm" class="form-stack"><div class="help">${esc(team.name)} · ${esc(team.organization)}<br>每位队员一个账号，每队最多三个。绑定对所有访客可见；清空一行可移除绑定。</div>${[0,1,2].map(row).join('')}<p class="help">绑定后立即同步，平时每天更新；颜色按当前 rating 显示，点击账号可打开 CF 主页。</p><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button type="submit" class="primary">保存绑定</button></div></form>`);
   $('cfForm').onsubmit=async e=>{
     e.preventDefault();const button=e.submitter;button.disabled=true;
     try {
       if(sid!==S.active||source!==S.source)throw Error('榜单已切换，请重新打开绑定');
       const members=[...$('cfForm').querySelectorAll('.cf-binding-row')].map(row=>({member:row.querySelector('[data-cf-member]').value.trim(),handle:row.querySelector('[data-cf-handle]').value.trim()})).filter(b=>b.member||b.handle);
-      await adminSave({source,cf_binding:{team:tid,members}},sid);closeModal();renderTable();toast('CF 绑定已保存，rating 将自动同步');
+      await adminSave({source,cf_binding:{team:tid,members}},sid);cfRefreshUntil=Date.now()+60000;closeModal();renderTable();toast('CF 绑定已保存，正在同步账号信息');
     }catch(error){errorMessage(error);}finally{button.disabled=false;}
   };
 }
@@ -173,7 +195,7 @@ async function refresh() {
       }
       save(localStorage,'xcpc-snapshot:'+sid,data);
     }
-    render();drainQueue();if(submissionHistory)loadSubmissions(submissionHistory);
+    render();drainQueue();firstCfVisit();if(submissionHistory)loadSubmissions(submissionHistory);
   } catch(error) {
     if(sid!==S.active)return;
     S.online=false;
@@ -298,6 +320,7 @@ function problemCell(p,team,label) {
   return `<button type="button" class="${classes}" data-history="${esc(p.history_key)}" data-history-team="${esc(team.id)}" title="${esc(title)} · 点击查看提交历史" aria-label="${esc(team.name+' · '+label+' · 提交历史')}">${content}</button>`;
 }
 function renderTable() {
+  watchCfSync();
   const b=board(),s=station(),wrap=$('tableWrap');
   const manyProblems=!!(b && b.problems.length>=10 && !b.problem_reveal?.hidden);
   wrap.classList.toggle('many-problems',manyProblems);

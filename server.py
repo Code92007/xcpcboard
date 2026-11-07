@@ -159,6 +159,11 @@ def matching_teams(old, new):
     return result
 
 
+def cf_entries(profile):
+    return {(tid, b['member'], b['handle'].casefold()):b['handle']
+            for tid, members in profile.get('cf_bindings', {}).items() for b in members}
+
+
 def raw_member_map(raw):
     result = {}
     for team in entries(raw['teams']):
@@ -702,11 +707,13 @@ class Store:
                 return
             config = copy.deepcopy(self.config)
             changed = False
+            cf_sync = []
             for station in config['contests']:
                 if board_source(station['board_url'])[0] != path:
                     continue
                 profiles = station.setdefault('profiles', {})
                 target = profiles.setdefault(source_key(path), {})
+                previous_bindings = cf_entries(target)
                 for link in links:
                     previous = profiles.get(link['source'], {})
                     if link['source'] in target.get('inherited_sources', []) or not (previous.get('notes') or previous.get('public_groups') or previous.get('cf_bindings')):
@@ -714,9 +721,11 @@ class Store:
                     merge_public_profile(target, previous, link['team_map'], raw_member_map(self.raw[source_key(path)]))
                     target.setdefault('inherited_sources', []).append(link['source'])
                     changed = True
+                cf_sync.extend(handle for identity, handle in cf_entries(target).items() if identity not in previous_bindings)
             if changed:
                 atomic_json(self.config_path, config)
                 self.config = config
+                self.ratings.request_sync(cf_sync)
 
     def public_station(self, station):
         path, _, group = board_source(station['board_url'])
@@ -787,6 +796,7 @@ class Store:
                 station = dict(id=sid, title=sid, board_url='', room='', freeze_after=4, reveal=False, profiles={})
                 config['contests'].append(station)
             previous_path = board_source(station['board_url'])[0]
+            previous_bindings = cf_entries(station.get('profiles', {}).get(source_key(previous_path), {}))
             if 'title' in data:
                 station['title'] = str(data['title']).strip()[:80] or sid
             if 'pinned' in data:
@@ -878,6 +888,8 @@ class Store:
             if self.previous_path(path):
                 self.load(self.previous_path(path))
             self.inherit_preferences(path)
+            current = self.station(sid).get('profiles', {}).get(key, {})
+            self.ratings.request_sync(handle for identity, handle in cf_entries(current).items() if identity not in previous_bindings)
         self.wakeup.set()
         return self.public_station(self.station(sid))
 
@@ -885,6 +897,11 @@ class Store:
         with self.lock:
             return list(dict.fromkeys(b['handle'] for s in self.config['contests'] for p in s.get('profiles', {}).values()
                                       for members in p.get('cf_bindings', {}).values() for b in members))
+
+    def cf_contests(self):
+        return [dict(source=s['source'], start_time=s['start_time'], end_time=s['end_time'],
+                     handles=[b['handle'] for members in s['cf_bindings'].values() for b in members])
+                for s in self.stations()]
 
     def import_public(self, sid, data):
         with self.lock:
@@ -1023,7 +1040,7 @@ class Store:
         with self.lock:
             s = self.station(sid)
             key = source_key(board_source(s['board_url'])[0])
-            signature = (id(self.config), id(self.raw.get(key)), int(time.time()))
+            signature = (id(self.config), id(self.raw.get(key)), self.ratings.revision, int(time.time()))
             cached = self.payload_cache.get(sid)
             if not cached or cached[0] != signature:
                 plain = json.dumps(self.board(sid), ensure_ascii=False, separators=(',', ':')).encode()
@@ -1120,6 +1137,27 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send(404, {'error': 'Not found'})
 
+    def do_POST(self):
+        if urlsplit(self.path).path != '/api/codeforces/visit':
+            self.send(404, {'error': 'Not found'})
+            return
+        origin = self.headers.get('Origin')
+        if origin and urlsplit(origin).netloc != self.headers.get('Host'):
+            self.send(403, {'error': '不允许跨站触发同步'})
+            return
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if not 0 < length <= 256 or json.loads(self.rfile.read(length)) != {}:
+                raise ValueError('同步请求格式错误')
+            store = self.server.store
+            queued = store.ratings.request_sync(store.cf_handles(), reason='visit')
+            self.send(202, dict(ok=True, queued=queued))
+        except (ValueError, TypeError):
+            self.send(400, {'error': '同步请求格式错误'})
+        except OSError:
+            LOG.exception('CF sync queue persistence failed')
+            self.send(500, {'error': '同步队列保存失败'})
+
     def do_PUT(self):
         path = urlsplit(self.path).path
         if not re.fullmatch(r'/api/admin/contests/[a-z0-9-]+(?:/import)?', path):
@@ -1165,7 +1203,7 @@ def main():
     server = BoardHTTPServer((os.getenv('BIND', '127.0.0.1'), int(os.getenv('PORT', '8766'))), Handler)
     server.store, server.token = store, token
     threading.Thread(target=store.worker, daemon=True).start()
-    threading.Thread(target=store.ratings.worker, args=(store.cf_handles,), daemon=True).start()
+    threading.Thread(target=store.ratings.worker, args=(store.cf_handles, store.cf_contests), daemon=True).start()
     LOG.info('Listening on %s:%s; cache %s', *server.server_address, store.directory)
     server.serve_forever()
 
