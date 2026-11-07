@@ -2,6 +2,7 @@
 import copy
 from collections import Counter
 import secrets
+from codeforces import MAX_BINDINGS, MAX_MEMBER_ACCOUNTS
 
 
 def norm(value):
@@ -61,8 +62,9 @@ def plan_import(target, sources, names):
                 report['conflicts'].append(dict(id=team['id'], kept=notes[team['id']], skipped=note))
             for binding in station.get('cf_bindings', {}).get(tid, []):
                 current = bindings.setdefault(team['id'], [])
-                if (binding['member'] in team.get('members', []) and len(current) < 3
-                        and all(b['member'] != binding['member'] and b['handle'].casefold() != binding['handle'].casefold() for b in current)):
+                if (binding['member'] in team.get('members', []) and len(current) < MAX_BINDINGS
+                        and sum(b['member'] == binding['member'] for b in current) < MAX_MEMBER_ACCOUNTS
+                        and all(b['handle'].casefold() != binding['handle'].casefold() for b in current)):
                     current.append(copy.deepcopy(binding))
                     report['bindings_added'] += 1
         for group in selected:

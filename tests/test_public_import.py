@@ -32,7 +32,7 @@ class PublicImportTests(unittest.TestCase):
                       board=dict(teams=[team('new', members=['甲','乙'])]))
         source = dict(station=dict(title='往期', notes={'old':'旧备注'}, public_groups=[dict(id='old-group', name='群友', teams=['old']),
                                  dict(id='cyber', name='赛博大战', teams=['old'])],
-                                 cf_bindings={'old':[dict(member='甲', handle='previous'), dict(member='乙', handle='second')]}),
+                                 cf_bindings={'old':[dict(member='甲', handle='previous'), dict(member='乙', handle='second'), dict(member='甲', handle='previous_alt')]}),
                       board=dict(teams=[team('old', members=['甲','乙'])]))
         before = copy.deepcopy(target)
         plan = plan_import(target, [source], ['群友','赛博大战'])
@@ -40,8 +40,8 @@ class PublicImportTests(unittest.TestCase):
         self.assertEqual(plan['notes'], {'new':'现有备注'})
         self.assertEqual(plan['public_groups'][0], dict(id='keep', name='群友', teams=['existing','new']))
         self.assertEqual(plan['public_groups'][1]['teams'], ['new'])
-        self.assertEqual(plan['cf_bindings']['new'], [dict(member='甲', handle='current'), dict(member='乙', handle='second')])
-        self.assertEqual(plan['report']['bindings_added'], 1)
+        self.assertEqual(plan['cf_bindings']['new'], [dict(member='甲', handle='current'), dict(member='甲', handle='previous'), dict(member='乙', handle='second')])
+        self.assertEqual(plan['report']['bindings_added'], 2)
         self.assertEqual(len(plan['report']['conflicts']), 1)
 
     def test_preview_is_readonly_apply_merges_and_rejects_stale_sources(self):

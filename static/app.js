@@ -66,6 +66,10 @@ async function firstCfVisit() {
   finally{cfVisitPending=false;}
 }
 
+function cfHeading() {
+  return S.showCf?'<th class="cf-col"><div class="cf-columns cf-heading"><span>CF 账号<small>队员</small></span><span>当前<small>rating</small></span><span>最高<small>rating</small></span></div></th>':'';
+}
+
 function cfCell(team) {
   if(!S.showCf)return '';
   const bindings=station()?.cf_bindings?.[team.id]||[], users=station()?.cf_users||{};
@@ -74,8 +78,10 @@ function cfCell(team) {
     const level=XCPCPreferences.cfLevel(user.rating);
     const label=level==='legendary'?`<span class="cf-first">${esc(handle.slice(0,1))}</span>${esc(handle.slice(1))}`:esc(handle);
     const rating=Number.isFinite(user.rating)?String(user.rating):user.syncing?'同步中…':user.error||(user.updated_at?'未评级':'待同步');
-    const detail=binding.member+' · '+rating+(user.syncing?' · 正在同步':user.stale&&user.updated_at?' · 缓存，等待更新':'')+(user.updated_at?' · 更新于 '+date(user.updated_at):'');
-    return `<div class="cf-entry" title="${esc(detail)}"><a class="cf-handle cf-${level}" href="https://codeforces.com/profile/${encodeURIComponent(handle)}" target="_blank" rel="noopener noreferrer">${label}</a><small>${esc(binding.member)} · ${esc(rating)}${(user.syncing||user.stale)&&user.updated_at?' ↻':''}</small></div>`;
+    const current=Number.isFinite(user.rating)?String(user.rating):'—',maximum=Number.isFinite(user.max_rating)?String(user.max_rating):'—';
+    const detail=binding.member+' · 当前 '+rating+' · 最高 '+maximum+(user.syncing?' · 正在同步':user.stale&&user.updated_at?' · 缓存，等待更新':'')+(user.updated_at?' · 更新于 '+date(user.updated_at):'');
+    const status=(user.syncing||user.stale)&&user.updated_at?' ↻':!Number.isFinite(user.rating)&&!user.updated_at?' · '+rating:'';
+    return `<div class="cf-entry cf-columns" title="${esc(detail)}"><div class="cf-identity"><a class="cf-handle cf-${level}" href="https://codeforces.com/profile/${encodeURIComponent(handle)}" target="_blank" rel="noopener noreferrer">${label}</a><small>${esc(binding.member+status)}</small></div><span class="cf-score cf-${level}" aria-label="当前 rating ${esc(current)}">${current}</span><span class="cf-score cf-${XCPCPreferences.cfLevel(user.max_rating)}" aria-label="最高 rating ${esc(maximum)}">${maximum}</span></div>`;
   }).join('');
   return `<td class="cf-cell">${entries||'<span class="cf-empty">—</span>'}${S.token&&board()?`<button class="cf-edit" data-cf="${esc(team.id)}" aria-label="绑定 ${esc(team.name)} 的 CF 账号">${bindings.length?'编辑':'＋ 绑定账号'}</button>`:''}</td>`;
 }
@@ -85,16 +91,23 @@ function editCf(tid) {
   const team=board()?.teams.find(t=>t.id===tid);if(!team)return;
   const sid=S.active,source=S.source,bindings=station().cf_bindings?.[tid]||[];
   const roster=team.members||[];
-  const row=(i)=>{
-    const binding=bindings[i]||{};
-    return `<div class="form-row cf-binding-row"><label class="field">队员 ${i+1}${roster.length?`<select data-cf-member><option value="">选择队员</option>${roster.map(m=>`<option value="${esc(m)}" ${m===binding.member?'selected':''}>${esc(m)}</option>`).join('')}</select>`:`<input data-cf-member value="${esc(binding.member||'')}" maxlength="80" placeholder="队员姓名">`}</label><label class="field">CF 账号<input data-cf-handle value="${esc(binding.handle||'')}" maxlength="24" placeholder="例如 tourist" autocomplete="off" autocapitalize="off" spellcheck="false"></label></div>`;
+  const row=(binding,i)=>{
+    return `<div class="form-row cf-binding-row"><label class="field">对应队员${roster.length?`<select data-cf-member aria-label="账号 ${i+1} 对应队员"><option value="">选择队员</option>${roster.map(m=>`<option value="${esc(m)}" ${m===binding.member?'selected':''}>${esc(m)}</option>`).join('')}</select>`:`<input data-cf-member aria-label="账号 ${i+1} 对应队员" value="${esc(binding.member||'')}" maxlength="80" placeholder="队员姓名">`}</label><label class="field">CF 账号 ${i+1}<input data-cf-handle value="${esc(binding.handle||'')}" maxlength="24" placeholder="例如 tourist" autocomplete="off" autocapitalize="off" spellcheck="false"></label><button type="button" class="cf-remove" data-cf-remove="${i}" aria-label="移除账号 ${i+1}">移除</button></div>`;
   };
-  openModal('绑定队员的 CF 账号','CODEFORCES',`<form id="cfForm" class="form-stack"><div class="help">${esc(team.name)} · ${esc(team.organization)}<br>每位队员一个账号，每队最多三个。绑定对所有访客可见；清空一行可移除绑定。</div>${[0,1,2].map(row).join('')}<p class="help">绑定后立即同步，平时每天更新；颜色按当前 rating 显示，点击账号可打开 CF 主页。</p><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button type="submit" class="primary">保存绑定</button></div></form>`);
+  const values=()=>[...$('cfForm').querySelectorAll('.cf-binding-row')].map(row=>({member:row.querySelector('[data-cf-member]').value.trim(),handle:row.querySelector('[data-cf-handle]').value.trim()}));
+  const renderRows=rows=>{
+    $('cfBindingRows').innerHTML=rows.map(row).join('');
+    $('cfAddAccount').disabled=rows.length>=6;
+  };
+  openModal('绑定队员的 CF 账号','CODEFORCES',`<form id="cfForm" class="form-stack"><div class="help">${esc(team.name)} · ${esc(team.organization)}<br>每位队员最多两个账号，每队最多六个。同一队员的第二个号可点击「添加账号」绑定；保存后对所有访客可见。</div><div id="cfBindingRows" class="form-stack"></div><button type="button" id="cfAddAccount">＋ 添加账号</button><p class="help">绑定后立即同步，平时每天更新；每个账号单独显示当前和最高 rating，账号颜色按当前 rating 显示。</p><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button type="submit" class="primary">保存绑定</button></div></form>`);
+  renderRows(Array.from({length:Math.max(3,bindings.length)},(_,i)=>bindings[i]||{}));
+  $('cfAddAccount').onclick=()=>{const rows=values();if(rows.length<6)renderRows([...rows,{}]);};
+  $('cfBindingRows').onclick=e=>{const button=e.target.closest('[data-cf-remove]');if(button){const rows=values();rows.splice(Number(button.dataset.cfRemove),1);renderRows(rows.length?rows:[{}]);}};
   $('cfForm').onsubmit=async e=>{
     e.preventDefault();const button=e.submitter;button.disabled=true;
     try {
       if(sid!==S.active||source!==S.source)throw Error('榜单已切换，请重新打开绑定');
-      const members=[...$('cfForm').querySelectorAll('.cf-binding-row')].map(row=>({member:row.querySelector('[data-cf-member]').value.trim(),handle:row.querySelector('[data-cf-handle]').value.trim()})).filter(b=>b.member||b.handle);
+      const members=values().filter(b=>b.member||b.handle);
       await adminSave({source,cf_binding:{team:tid,members}},sid);cfRefreshUntil=Date.now()+60000;closeModal();renderTable();toast('CF 绑定已保存，正在同步账号信息');
     }catch(error){errorMessage(error);}finally{button.disabled=false;}
   };
@@ -332,7 +345,7 @@ function renderTable() {
       const teams=s.preference_preview.teams,rows=teams.filter(t=>inView(t)&&matches(t));
       $('teamCount').textContent=rows.length+' / '+teams.length;
       $('viewInfo').textContent=(S.view==='all'?'全部队伍':S.view==='stars'?'我的关注':currentGroup()?.name||'')+' · 热身赛名单 · 等待正式赛数据';
-      wrap.innerHTML=`<div class="cache-notice">以下为已保留的热身赛队伍、关注和备注。正式赛名单公布后会自动匹配导入。</div><table><thead><tr><th class="star-col"></th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th>${S.showCf?'<th class="cf-col">CF 账号<small>队员 · 当前 rating</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell">${stars().includes(t.id)?'★':''}</td><td class="note-cell">${esc(note(t)||'—')}</td>${S.showSeat?`<td class="seat-cell">${esc(t.location)}</td>`:''}<td class="team-cell"><div class="team-name">${esc(t.name)}</div><div class="organization">${esc(t.organization)}</div></td>${cfCell(t)}</tr>`).join('')||`<tr><td colspan="${3+Number(S.showSeat)+Number(S.showCf)}"><div class="empty">没有找到匹配队伍</div></td></tr>`}</tbody></table>`;
+      wrap.innerHTML=`<div class="cache-notice">以下为已保留的热身赛队伍、关注和备注。正式赛名单公布后会自动匹配导入。</div><table><thead><tr><th class="star-col"></th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th>${cfHeading()}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell">${stars().includes(t.id)?'★':''}</td><td class="note-cell">${esc(note(t)||'—')}</td>${S.showSeat?`<td class="seat-cell">${esc(t.location)}</td>`:''}<td class="team-cell"><div class="team-name">${esc(t.name)}</div><div class="organization">${esc(t.organization)}</div></td>${cfCell(t)}</tr>`).join('')||`<tr><td colspan="${3+Number(S.showSeat)+Number(S.showCf)}"><div class="empty">没有找到匹配队伍</div></td></tr>`}</tbody></table>`;
       return;
     }
     $('teamCount').textContent='—';
@@ -345,7 +358,7 @@ function renderTable() {
   const hidden=!!b.problem_reveal?.hidden;
   const revealHint=hidden?` · 满 ${b.problem_reveal.threshold} 队通过后揭晓题号；右侧未揭晓题目仅在队内排列`:'';
   $('viewInfo').textContent+=revealHint;
-  wrap.innerHTML=`<table><thead><tr><th class="star-col"></th><th class="rank-col">排名</th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th>${S.showCf?'<th class="cf-col">CF 账号<small>队员 · 当前 rating</small></th>':''}<th class="solved-col">AC</th><th class="penalty-col">罚时</th>${b.problems.map(p=>`<th><span class="prob-label" style="background:${safeColor(p.color)}">${esc(p.label)}</span><small>${eligible.filter(t=>t.problems[b.problems.indexOf(p)].state==='ac').length} AC</small></th>`).join('')}${hidden?'<th class="hidden-heading">未揭晓题目<small>队内排列 · 无题号</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell"><button class="star ${stars().includes(t.id)?'on':''}" data-star="${esc(t.id)}" title="${stars().includes(t.id)?'取消关注':'加入我的关注'}" aria-label="${stars().includes(t.id)?'取消关注':'关注'} ${esc(t.name)}">${stars().includes(t.id)?'★':'☆'}</button></td><td class="rank">${rankBadge(t)}</td><td class="note-cell"><button class="note-button ${note(t)?'':'blank'}" data-note="${esc(t.id)}" title="编辑群友备注">${note(t)?esc(note(t)):'＋ 添加备注'}</button></td>${S.showSeat?`<td class="seat-cell">${esc(t.location || '—')}</td>`:''}<td class="team-cell" title="${esc(t.id+' · '+t.name+' · '+t.members.join(' / '))}"><div class="team-name">${esc(t.name)}${t.groups.includes('unofficial')?'<span class="unofficial">打星</span>':''}</div><div class="organization">${esc(t.organization || t.location || t.id)}</div></td>${cfCell(t)}<td class="solved">${t.solved}</td><td class="penalty">${minute(t.penalty)}</td>${t.problems.map((p,i)=>`<td class="prob-cell">${problemCell(p,t,b.problems[i].label)}</td>`).join('')}${hidden?`<td class="hidden-cell"><div class="hidden-problems">${(t.hidden_problems||[]).map(p=>problemCell(p,t,'未揭晓题目')).join('')||'<span class="help">尚无提交</span>'}</div></td>`:''}</tr>`).join('') || `<tr><td colspan="${6+Number(S.showSeat)+Number(S.showCf)+b.problems.length+Number(hidden)}"><div class="empty"><h3>${S.query?'没有找到匹配队伍':S.view==='stars'?'还没有关注的队伍':'这个分组还没有队伍'}</h3><p>${S.query?'试试队名、学校或群友备注。':S.view==='stars'?'批量勾选队伍，或从已有分组添加到我的关注。':'在全部队伍中点 ☆，或使用「关注分组」挑选队伍。'}</p>${S.view==='stars'?'<button class="primary" data-action="pick-stars">勾选导入队伍</button>':''}</div></td></tr>`}</tbody></table>`;
+  wrap.innerHTML=`<table><thead><tr><th class="star-col"></th><th class="rank-col">排名</th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th>${cfHeading()}<th class="solved-col">AC</th><th class="penalty-col">罚时</th>${b.problems.map(p=>`<th><span class="prob-label" style="background:${safeColor(p.color)}">${esc(p.label)}</span><small>${eligible.filter(t=>t.problems[b.problems.indexOf(p)].state==='ac').length} AC</small></th>`).join('')}${hidden?'<th class="hidden-heading">未揭晓题目<small>队内排列 · 无题号</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell"><button class="star ${stars().includes(t.id)?'on':''}" data-star="${esc(t.id)}" title="${stars().includes(t.id)?'取消关注':'加入我的关注'}" aria-label="${stars().includes(t.id)?'取消关注':'关注'} ${esc(t.name)}">${stars().includes(t.id)?'★':'☆'}</button></td><td class="rank">${rankBadge(t)}</td><td class="note-cell"><button class="note-button ${note(t)?'':'blank'}" data-note="${esc(t.id)}" title="编辑群友备注">${note(t)?esc(note(t)):'＋ 添加备注'}</button></td>${S.showSeat?`<td class="seat-cell">${esc(t.location || '—')}</td>`:''}<td class="team-cell" title="${esc(t.id+' · '+t.name+' · '+t.members.join(' / '))}"><div class="team-name">${esc(t.name)}${t.groups.includes('unofficial')?'<span class="unofficial">打星</span>':''}</div><div class="organization">${esc(t.organization || t.location || t.id)}</div></td>${cfCell(t)}<td class="solved">${t.solved}</td><td class="penalty">${minute(t.penalty)}</td>${t.problems.map((p,i)=>`<td class="prob-cell">${problemCell(p,t,b.problems[i].label)}</td>`).join('')}${hidden?`<td class="hidden-cell"><div class="hidden-problems">${(t.hidden_problems||[]).map(p=>problemCell(p,t,'未揭晓题目')).join('')||'<span class="help">尚无提交</span>'}</div></td>`:''}</tr>`).join('') || `<tr><td colspan="${6+Number(S.showSeat)+Number(S.showCf)+b.problems.length+Number(hidden)}"><div class="empty"><h3>${S.query?'没有找到匹配队伍':S.view==='stars'?'还没有关注的队伍':'这个分组还没有队伍'}</h3><p>${S.query?'试试队名、学校或群友备注。':S.view==='stars'?'批量勾选队伍，或从已有分组添加到我的关注。':'在全部队伍中点 ☆，或使用「关注分组」挑选队伍。'}</p>${S.view==='stars'?'<button class="primary" data-action="pick-stars">勾选导入队伍</button>':''}</div></td></tr>`}</tbody></table>`;
 }
 function statusClass(status) {return status==='AC'?'ac':['FROZEN','PENDING'].includes(status)?'pending':['WA','RE','TLE','MLE','OLE','RJ','JE'].includes(status)?'wa':'neutral';}
 function renderQueue(animated=false,newId='') {

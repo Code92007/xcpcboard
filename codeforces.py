@@ -15,6 +15,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 HANDLE = re.compile(r'[A-Za-z0-9_.-]{1,24}')
+MAX_BINDINGS = 6
+MAX_MEMBER_ACCOUNTS = 2
 TTL = 24 * 3600
 VISIT_COOLDOWN = 60
 
@@ -27,9 +29,9 @@ def clean_bindings(value, teams):
     for tid, bindings in value.items():
         if tid not in by_id:
             raise ValueError('CF 绑定的队伍不存在，请刷新名单')
-        if not isinstance(bindings, list) or len(bindings) > 3:
-            raise ValueError('每队最多绑定 3 个 CF 账号')
-        result, members, handles = [], set(), set()
+        if not isinstance(bindings, list) or len(bindings) > MAX_BINDINGS:
+            raise ValueError('每队最多绑定 6 个 CF 账号')
+        result, members, handles = [], {}, set()
         roster = by_id[tid].get('members', [])
         for binding in bindings:
             if not isinstance(binding, dict):
@@ -42,9 +44,11 @@ def clean_bindings(value, teams):
             member, handle = member.strip(), handle.strip()
             if roster and member not in roster:
                 raise ValueError('绑定的队员不在该队参赛名单中')
-            if member in members or handle.casefold() in handles:
-                raise ValueError('同一队员或 CF 账号不能重复绑定')
-            members.add(member)
+            if members.get(member, 0) >= MAX_MEMBER_ACCOUNTS:
+                raise ValueError('每位队员最多绑定 2 个 CF 账号')
+            if handle.casefold() in handles:
+                raise ValueError('同一 CF 账号不能重复绑定')
+            members[member] = members.get(member, 0) + 1
             handles.add(handle.casefold())
             result.append(dict(member=member, handle=handle))
         if result:
@@ -191,10 +195,12 @@ class Ratings:
         for handle, user in zip(handles, users):
             if not isinstance(user, dict) or not HANDLE.fullmatch(str(user.get('handle', ''))):
                 raise ValueError('Invalid CF user response')
-            rating = user.get('rating')
-            if rating is not None and (type(rating) is not int or not 0 <= rating <= 10000):
+            rating, max_rating = user.get('rating'), user.get('maxRating')
+            if any(value is not None and (type(value) is not int or not 0 <= value <= 10000)
+                   for value in (rating, max_rating)):
                 raise ValueError('Invalid CF rating')
-            result[handle.casefold()] = dict(handle=user['handle'], rating=rating, rank=str(user.get('rank', ''))[:80], error='')
+            result[handle.casefold()] = dict(handle=user['handle'], rating=rating, max_rating=max_rating,
+                                             rank=str(user.get('rank', ''))[:80], error='')
         return result
 
     def lookup(self, handle):
@@ -208,9 +214,10 @@ class Ratings:
             if self.busy or now - self.last_request < 3:
                 return False
             self.pending = {k:v for k,v in self.pending.items() if k in configured}
-            # New uncached accounts also recover if an older server saved them
-            # just before upgrading to the event-driven queue.
-            self.enqueue([h for k,h in configured.items() if k not in self.users], 'missing', now)
+            # Recover newly saved accounts and backfill maximum ratings when
+            # upgrading a cache from the version that stored only current ones.
+            self.enqueue([h for k,h in configured.items() if k not in self.users or
+                          ('max_rating' not in self.users[k] and not self.users[k].get('error'))], 'missing', now)
             due = sorted((k for k,v in self.pending.items() if v['ready_at'] <= now), key=lambda k:self.pending[k]['ready_at'])[:100]
             if not due:
                 return False

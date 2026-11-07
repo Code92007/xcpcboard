@@ -16,9 +16,9 @@ import server
 class CodeforcesTests(unittest.TestCase):
     def test_warmup_binding_inheritance_checks_formal_team_members(self):
         target = {}
-        old = dict(cf_bindings={'old':[dict(member='甲', handle='first'), dict(member='乙', handle='second')]})
+        old = dict(cf_bindings={'old':[dict(member='甲', handle='first'), dict(member='乙', handle='second'), dict(member='甲', handle='alternate')]})
         server.merge_public_profile(target, old, {'old':'new'}, {'new':['甲','丙']})
-        self.assertEqual(target['cf_bindings'], {'new':[dict(member='甲', handle='first')]})
+        self.assertEqual(target['cf_bindings'], {'new':[dict(member='甲', handle='first'), dict(member='甲', handle='alternate')]})
 
     def test_member_validation_limits_duplicates_and_nonexistent_teams(self):
         teams = [dict(id='t', members=['甲', '乙', '丙'])]
@@ -30,17 +30,22 @@ class CodeforcesTests(unittest.TestCase):
             {'t':[dict(member='甲', handle='bad/account')]},
             {'t':[dict(member='丁', handle='valid')]},
             {'t':[dict(member='甲', handle='valid'), dict(member='乙', handle='VALID')]},
-            {'t':[dict(member='甲', handle='first'), dict(member='甲', handle='second')]},
+            {'t':[dict(member='甲', handle=h) for h in ['first','second','third']]},
             {'t':[dict(member='', handle='valid')]},
         ]
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 clean_bindings(value, teams)
 
+        six = {'t':[dict(member=m, handle='user_'+str(i)) for i,m in enumerate(['甲','甲','乙','乙','丙','丙'])]}
+        self.assertEqual(clean_bindings(six, teams), six)
+        with self.assertRaisesRegex(ValueError, '每队最多'):
+            clean_bindings({'t':six['t']+[dict(member='丙', handle='seventh')]}, teams)
+
     def test_cache_persists_current_rating_and_keeps_it_during_outages(self):
         with tempfile.TemporaryDirectory() as directory:
             ratings = Ratings(directory)
-            with patch.object(ratings, 'lookup_many', return_value={'some_user':dict(handle='Some_User', rating=2105, rank='master', error='')}) as lookup:
+            with patch.object(ratings, 'lookup_many', return_value={'some_user':dict(handle='Some_User', rating=2105, max_rating=2900, rank='master', error='')}) as lookup:
                 self.assertTrue(ratings.refresh(['Some_User'], now=10000))
                 self.assertFalse(ratings.refresh(['Some_User', 'other'], now=10001))
                 self.assertFalse(ratings.refresh(['Some_User'], now=10010))
@@ -52,6 +57,7 @@ class CodeforcesTests(unittest.TestCase):
                 self.assertTrue(restored.refresh(['Some_User'], now=14000))
                 cached = restored.snapshot(['SOME_USER'], now=14001)['some_user']
                 self.assertEqual((cached['rating'], cached['updated_at']), (2105, 10000))
+                self.assertEqual(cached['max_rating'], 2900)
                 self.assertTrue(cached['stale'])
                 self.assertEqual(cached['error'], 'CF 暂不可用')
                 self.assertFalse(restored.refresh(['Some_User'], now=14010))
@@ -59,7 +65,7 @@ class CodeforcesTests(unittest.TestCase):
     def test_invalid_handle_does_not_prevent_other_users_refreshing(self):
         with tempfile.TemporaryDirectory() as directory:
             ratings = Ratings(directory)
-            with patch.object(ratings, 'lookup_many', side_effect=[{'missing':dict(error='账号不存在')}, {'valid':dict(handle='valid', rating=None, rank='', error='')}]):
+            with patch.object(ratings, 'lookup_many', side_effect=[{'missing':dict(error='账号不存在')}, {'valid':dict(handle='valid', rating=None, max_rating=None, rank='', error='')}]):
                 ratings.refresh(['missing', 'valid'], now=10000)
                 ratings.refresh(['missing', 'valid'], now=10003)
             users = ratings.snapshot(['missing', 'valid'], now=10004)
@@ -77,17 +83,21 @@ class CodeforcesTests(unittest.TestCase):
             server.atomic_json(Path(directory)/(key+'.json.gz'), raw, True)
             store.load(path)
             store.update('nanjing', dict(source=key, cf_binding=dict(team='t', members=[dict(member='甲', handle='Some_User')]), notes={'t':'群友'}))
-            store.update('nanjing', dict(source=key, cf_binding=dict(team='t', members=[dict(member='乙', handle='another')])) )
+            two = [dict(member='乙', handle='another'), dict(member='乙', handle='another_alt')]
+            store.update('nanjing', dict(source=key, cf_binding=dict(team='t', members=two)))
             before = store.config_path.read_bytes()
             for source, binding in [('wrong', dict(team='t', members=[])), (key, dict(team='t', members=[dict(member='外人', handle='valid')]))]:
                 with self.assertRaises(ValueError):
                     store.update('nanjing', dict(source=source, cf_binding=binding))
                 self.assertEqual(store.config_path.read_bytes(), before)
+            with self.assertRaisesRegex(ValueError, '每位队员最多'):
+                store.update('nanjing', dict(source=key, cf_binding=dict(team='t', members=two+[dict(member='乙', handle='third')])) )
+            self.assertEqual(store.config_path.read_bytes(), before)
             restored = server.Store(directory).public_station(store.station('nanjing'))
-            self.assertEqual(restored['cf_bindings'], {'t':[dict(member='乙', handle='another')]})
+            self.assertEqual(restored['cf_bindings'], {'t':two})
             self.assertEqual(restored['notes'], {'t':'群友'})
-            self.assertEqual(store.cf_handles(), ['another'])
-            self.assertTrue(restored['cf_users']['another']['syncing'])
+            self.assertEqual(store.cf_handles(), ['another', 'another_alt'])
+            self.assertTrue(all(restored['cf_users'][h]['syncing'] for h in ['another','another_alt']))
             self.assertTrue(store.ratings.wakeup.is_set())
 
     def test_lookup_uses_current_rating_and_historic_handle_response(self):
@@ -96,14 +106,32 @@ class CodeforcesTests(unittest.TestCase):
             response = unittest.mock.MagicMock()
             response.__enter__.return_value.read.return_value = json.dumps(dict(status='OK', result=[dict(handle='New_Name', rating=1500, maxRating=2900)])).encode()
             with patch.object(ratings.opener, 'open', return_value=response) as request:
-                self.assertEqual(ratings.lookup('Old_Name')['rating'], 1500)
-                self.assertEqual(ratings.lookup('Old_Name')['handle'], 'New_Name')
+                user = ratings.lookup('Old_Name')
+                self.assertEqual((user['rating'], user['max_rating'], user['handle']), (1500, 2900, 'New_Name'))
                 self.assertIn('https://codeforces.com/api/user.info?', request.call_args.args[0].full_url)
+
+    def test_existing_cache_fetches_maximum_rating_once_and_validates_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'codeforces-cache.json'
+            path.write_text(json.dumps(dict(version=1, users={'first':dict(handle='first', rating=2000, updated_at=10000, last_attempt=10000, error='')})))
+            ratings = Ratings(directory)
+            response = unittest.mock.MagicMock()
+            user = dict(handle='first', rating=2000, maxRating=2600)
+            response.__enter__.return_value.read.return_value = json.dumps(dict(status='OK', result=[user])).encode()
+            with patch.object(ratings.opener, 'open', return_value=response) as fetch:
+                self.assertTrue(ratings.refresh(['first'], now=10003))
+                self.assertFalse(ratings.refresh(['first'], now=10006))
+                fetch.assert_called_once()
+            self.assertEqual(Ratings(directory).snapshot(['first'], now=10010)['first']['max_rating'], 2600)
+            for invalid in ['2600', True, -1, 10001]:
+                response.__enter__.return_value.read.return_value = json.dumps(dict(status='OK', result=[{**user, 'maxRating':invalid}])).encode()
+                with patch.object(ratings.opener, 'open', return_value=response), self.assertRaises(ValueError):
+                    ratings.lookup('first')
 
     def test_binding_forces_fresh_cached_account_but_visitors_share_work(self):
         with tempfile.TemporaryDirectory() as directory:
             ratings = Ratings(directory)
-            update = {'first':dict(handle='first', rating=2500, rank='grandmaster', error='')}
+            update = {'first':dict(handle='first', rating=2500, max_rating=2500, rank='grandmaster', error='')}
             with patch.object(ratings, 'lookup_many', return_value=update) as lookup:
                 ratings.refresh(['first'], now=10000)
                 self.assertEqual(ratings.request_sync(['FIRST'], reason='visit', now=10005), 0)
@@ -125,7 +153,7 @@ class CodeforcesTests(unittest.TestCase):
                 reader.start();reader.join(1)
                 self.assertFalse(reader.is_alive(), 'Snapshot blocked on CF network')
                 self.assertTrue(all(u['syncing'] for u in observed[0].values()))
-                return {h.casefold():dict(handle=h, rating=2000, rank='', error='') for h in handles}
+                return {h.casefold():dict(handle=h, rating=2000, max_rating=2000, rank='', error='') for h in handles}
             with patch.object(ratings, 'lookup_many', side_effect=lookup) as fetch:
                 ratings.refresh(['first','second','third'], now=10000)
                 self.assertEqual(len(fetch.call_args.args[0]), 3)
@@ -139,7 +167,7 @@ class CodeforcesTests(unittest.TestCase):
             before = datetime.fromisoformat('2026-11-07T15:59:59+00:00').timestamp()
             ratings.schedule(['first'], [], now=before)
             self.assertEqual(ratings.daily_date, '2026-11-07')
-            with patch.object(ratings, 'lookup_many', return_value={'first':dict(handle='first', rating=2200, rank='', error='')}):
+            with patch.object(ratings, 'lookup_many', return_value={'first':dict(handle='first', rating=2200, max_rating=2200, rank='', error='')}):
                 ratings.refresh(['first'], now=before)
                 ratings.schedule(['first'], [], now=before+1)
                 self.assertEqual(ratings.daily_date, '2026-11-08')
@@ -157,13 +185,13 @@ class CodeforcesTests(unittest.TestCase):
             contest = dict(source='formal-source', start_time=start, end_time=start+18000, handles=['first'])
             old = dict(source='old-source', start_time=start-90000, end_time=start-72000, handles=['second'])
             ratings.schedule(['first','second'], [contest,old], now=start-10)
-            with patch.object(ratings, 'lookup_many', return_value={h:dict(handle=h, rating=2200, rank='', error='') for h in ['first','second']}):
+            with patch.object(ratings, 'lookup_many', return_value={h:dict(handle=h, rating=2200, max_rating=2200, rank='', error='') for h in ['first','second']}):
                 ratings.refresh(['first','second'], now=start-10)
             ratings.schedule(['first','second'], [contest,old], now=start-1)
             self.assertEqual(ratings.pending, {})
             ratings.schedule(['first','second'], [contest,old], now=start)
             self.assertEqual(list(ratings.pending), ['first'])
-            with patch.object(ratings, 'lookup_many', return_value={'first':dict(handle='first', rating=2201, rank='', error='')}):
+            with patch.object(ratings, 'lookup_many', return_value={'first':dict(handle='first', rating=2201, max_rating=2201, rank='', error='')}):
                 ratings.refresh(['first','second'], now=start)
             restored = Ratings(directory)
             restored.schedule(['first','second'], [contest,old], now=start+10)
@@ -190,7 +218,7 @@ class CodeforcesTests(unittest.TestCase):
             self.assertEqual(restored.pending['first']['ready_at'], 10300)
             self.assertFalse(restored.snapshot(['first'], now=10010)['first']['syncing'])
             self.assertEqual(restored.request_sync(['first'], reason='visit', now=10010), 0)
-            with patch.object(restored, 'lookup_many', return_value={'first':dict(handle='first', rating=2400, rank='', error='')}) as fetch:
+            with patch.object(restored, 'lookup_many', return_value={'first':dict(handle='first', rating=2400, max_rating=2400, rank='', error='')}) as fetch:
                 self.assertFalse(restored.refresh(['first'], now=10299))
                 self.assertTrue(restored.refresh(['first'], now=10300))
                 self.assertEqual(fetch.call_count, 1)
@@ -202,7 +230,7 @@ class CodeforcesTests(unittest.TestCase):
                 ratings.refresh(['first'], now=10000)
             restored = Ratings(directory)
             self.assertEqual(restored.request_sync(['first'], now=10001), 1)
-            with patch.object(restored, 'lookup_many', return_value={'first':dict(handle='first', rating=2400, rank='', error='')}) as fetch:
+            with patch.object(restored, 'lookup_many', return_value={'first':dict(handle='first', rating=2400, max_rating=2400, rank='', error='')}) as fetch:
                 self.assertFalse(restored.refresh(['first'], now=10001))
                 self.assertTrue(restored.refresh(['first'], now=10003))
                 self.assertEqual(fetch.call_count, 1)
