@@ -34,6 +34,13 @@ GIRLS_STATION = dict(id='girls', title='CCPC 女生赛',
                      board_url='https://rank.iccpc.cn/r/e5697b3a-8326-4818-84ca-e2ce1688af23',
                      warmup_board_url='https://rank.iccpc.cn/r/6277d913-846a-4259-92a5-f61bf54c0783',
                      room='', freeze_after=4, reveal=False, profiles={})
+NANJING_STATION = dict(id='nanjing', title='ICPC 南京',
+                       board_url='https://board.xcpcio.com/icpc/51st/nanjing?group=official',
+                       room='', freeze_after=4, reveal=False, profiles={})
+LESHAN_STATION = dict(id='leshan', title='CCPC 乐山（热身赛，正赛待发布）',
+                      board_url='https://rank.iccpc.cn/r/a3bce2bc-1c4d-4b81-af38-fa51badaeec2',
+                      warmup_board_url='https://rank.iccpc.cn/r/a3bce2bc-1c4d-4b81-af38-fa51badaeec2',
+                      room='', freeze_after=4, reveal=False, profiles={})
 AC = {'AC', 'OK', 'CORRECT', 'ACCEPTED'}
 PENDING = {'PD', 'PENDING', 'WAITING', 'COMPILING', 'JUDGING', 'FROZEN'}
 REJECTED = {'WA', 'WRONG_ANSWER', 'RJ', 'REJECTED', 'INCORRECT', 'NO', 'NO_OUTPUT',
@@ -594,7 +601,7 @@ class Store:
             self.config = json.loads(self.config_path.read_text())
             if any(s['id'] in ('xian', 'changchun', 'chengdu') for s in self.config['contests']):
                 changed = False
-                for default in [CHENGDU_STATION, WUHAN_STATION, GIRLS_STATION]:
+                for default in [CHENGDU_STATION, WUHAN_STATION, GIRLS_STATION, NANJING_STATION, LESHAN_STATION]:
                     if not any(s['id'] == default['id'] for s in self.config['contests']):
                         self.config['contests'].append(copy.deepcopy(default))
                         changed = True
@@ -604,7 +611,8 @@ class Store:
             self.config = {'contests': [
                 dict(id='xian', title='ICPC 西安', board_url='https://board.xcpcio.com/icpc/51st/xian-warmup?group=official', room='', freeze_after=4, reveal=False, profiles={}),
                 dict(id='changchun', title='CCPC 长春', board_url='https://rank.iccpc.cn/r/8a3a28e3-f6b3-4a58-b4ac-fa8039fb2c72', room='', freeze_after=4, reveal=False, profiles={}),
-                copy.deepcopy(CHENGDU_STATION), copy.deepcopy(WUHAN_STATION), copy.deepcopy(GIRLS_STATION)]}
+                copy.deepcopy(CHENGDU_STATION), copy.deepcopy(WUHAN_STATION), copy.deepcopy(GIRLS_STATION),
+                copy.deepcopy(NANJING_STATION), copy.deepcopy(LESHAN_STATION)]}
             atomic_json(self.config_path, self.config)
         for station in self.config['contests']:
             path = board_source(station['board_url'])[0]

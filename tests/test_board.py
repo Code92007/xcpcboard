@@ -136,7 +136,7 @@ class PersistenceTests(unittest.TestCase):
         server.atomic_json(self.store.config_path, previous)
         upgraded = server.Store(self.temp.name)
         self.assertEqual([s['id'] for s in upgraded.config['contests']],
-                         ['xian', 'changchun', 'chengdu', 'wuhan', 'girls'])
+                         ['xian', 'changchun', 'chengdu', 'wuhan', 'girls', 'nanjing', 'leshan'])
         self.assertEqual(upgraded.config['contests'][:2], previous['contests'])
         self.assertEqual(server.Store(self.temp.name).config, upgraded.config)
 
@@ -188,18 +188,18 @@ class PersistenceTests(unittest.TestCase):
         path = server.board_source(self.store.station('girls')['board_url'])[0]
         self.store.raw[server.source_key(path)] = dict(provider='iccpc', config=dict(start_time='2026-10-31 15:00:00'),
                                                      time_context=dict(wall_clock_timezone='Asia/Shanghai'))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'chengdu', 'changchun', 'xian'])
+        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'chengdu', 'changchun', 'xian', 'nanjing', 'leshan'])
         self.store.update('xian', dict(pinned=True))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'xian', 'chengdu', 'changchun'])
+        self.assertEqual([s['id'] for s in self.store.stations()], ['wuhan', 'girls', 'xian', 'chengdu', 'changchun', 'nanjing', 'leshan'])
         self.store.update('wuhan', dict(pinned=False))
-        self.assertEqual([s['id'] for s in self.store.stations()], ['xian', 'girls', 'wuhan', 'chengdu', 'changchun'])
+        self.assertEqual([s['id'] for s in self.store.stations()], ['xian', 'girls', 'wuhan', 'chengdu', 'changchun', 'nanjing', 'leshan'])
         before = copy.deepcopy(self.store.config)
         with self.assertRaises(ValueError):
             self.store.update('wuhan', dict(pinned='false'))
         self.assertEqual(self.store.config, before)
 
     def test_girls_stays_second_without_formal_data_and_after_restart(self):
-        expected = ['wuhan', 'girls', 'xian', 'changchun', 'chengdu']
+        expected = ['wuhan', 'girls', 'xian', 'changchun', 'chengdu', 'nanjing', 'leshan']
         self.assertEqual([s['id'] for s in self.store.stations()], expected)
         self.assertIsNone(self.store.board('girls')['board'])
         self.assertEqual([s['id'] for s in server.Store(self.temp.name).stations()], expected)
