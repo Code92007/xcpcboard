@@ -1,6 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
-const {load, matchStars} = require('../static/preferences.js');
+const {load, matchStars, cfLevel} = require('../static/preferences.js');
+for (const [rating, expected] of [[null,'unrated'],[undefined,'unrated'],[0,'newbie'],[1199,'newbie'],[1200,'pupil'],[1399,'pupil'],[1400,'specialist'],[1600,'expert'],[1900,'candidate-master'],[2100,'master'],[2399,'master'],[2400,'grandmaster'],[2999,'grandmaster'],[3000,'legendary']]) assert.equal(cfLevel(rating), expected);
 const values = new Map();
 const storage = {getItem:k => values.get(k) ?? null, setItem:(k,v) => values.set(k,v)};
 const old = {stars:['a','b','unmatched'], notes:{a:'原备注', b:'旧备注', unmatched:'不要迁移'}, groups:[{id:'old-g',name:'群友',teams:['a','b','unmatched']}], view:'local:old-g',queueOnly:true};

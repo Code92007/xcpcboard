@@ -77,7 +77,18 @@
     }
     return {matches, unmatched, ambiguous, alreadyFollowed};
   }
-  const api = {load, matchStars};
+  function cfLevel(rating) {
+    if (!Number.isFinite(rating)) return 'unrated';
+    if (rating < 1200) return 'newbie';
+    if (rating < 1400) return 'pupil';
+    if (rating < 1600) return 'specialist';
+    if (rating < 1900) return 'expert';
+    if (rating < 2100) return 'candidate-master';
+    if (rating < 2400) return 'master';
+    if (rating < 3000) return 'grandmaster';
+    return 'legendary';
+  }
+  const api = {load, matchStars, cfLevel};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.XCPCPreferences = api;
 })(globalThis);

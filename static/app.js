@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const read = (storage, key, fallback) => { try { return JSON.parse(storage.getItem(key)) ?? fallback; } catch { return fallback; } };
 const save = (storage, key, value) => { try { storage.setItem(key, JSON.stringify(value)); return true; } catch { toast('浏览器存储不可用，本次修改仅在当前页面保留'); return false; } };
-const S = {stations:[], active:'', data:null, local:null, token:read(sessionStorage,'xcpc-admin',''), query:'', view:'all', rankGroup:'official', showSeat:read(localStorage,'xcpc-show-seat',true)!==false, queue:[], seen:new Map(), backlog:[], paused:false, queueOnly:false, video:true, mediaSelected:{}, busy:false, source:'', online:true,queueInitialized:false,receivedAt:0};
+const S = {stations:[], active:'', data:null, local:null, token:read(sessionStorage,'xcpc-admin',''), query:'', view:'all', rankGroup:'official', showSeat:read(localStorage,'xcpc-show-seat',true)!==false, showCf:read(localStorage,'xcpc-show-cf',true)!==false, queue:[], seen:new Map(), backlog:[], paused:false, queueOnly:false, video:true, mediaSelected:{}, busy:false, source:'', online:true,queueInitialized:false,receivedAt:0};
 let toastTimer, pollTimer, animationTimer, preferenceSignature, submissionHistory=null;
 let stationOptionIndex=-1, stationOptionMatches=[], stationNavigationSignature='';
 function toast(message) { $('toast').textContent=message; $('toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3500); }
@@ -36,13 +36,47 @@ function currentGroup() {
 }
 function inView(team) { if(S.view==='all')return true; if(S.view==='stars')return stars().includes(team.id); return currentGroup()?.teams.includes(team.id) ?? false; }
 function inRankGroup(team) { return S.rankGroup==='all' || team.groups.includes(S.rankGroup); }
-function matches(team,query=S.query) { return [team.name,team.organization,team.id,team.location,note(team),...(team.members||[])].join(' ').toLowerCase().includes(query.toLowerCase()); }
+function matches(team,query=S.query) { return [team.name,team.organization,team.id,team.location,note(team),...(team.members||[]),...(station()?.cf_bindings?.[team.id]||[]).map(b=>b.handle)].join(' ').toLowerCase().includes(query.toLowerCase()); }
 function minute(n) { return Number.isInteger(n)?String(n):Number(n).toFixed(2).replace(/0+$/,'').replace(/\.$/,''); }
 function newId() { return 'g'+[...crypto.getRandomValues(new Uint8Array(8))].map(n=>n.toString(16).padStart(2,'0')).join(''); }
 function clock(sec) { sec=Math.max(0,Math.floor(sec));return [Math.floor(sec/3600),Math.floor(sec%3600/60),sec%60].map(n=>String(n).padStart(2,'0')).join(':'); }
 function date(sec) { return new Date(sec*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}); }
 function timeOf(sec) { return new Date(sec*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}); }
 function safeColor(value) { return /^#[0-9a-f]{3,8}$/i.test(value)?value:'#edf1e6'; }
+
+function cfCell(team) {
+  if(!S.showCf)return '';
+  const bindings=station()?.cf_bindings?.[team.id]||[], users=station()?.cf_users||{};
+  const entries=bindings.map(binding=>{
+    const user=users[binding.handle.toLowerCase()]||{},handle=user.handle||binding.handle;
+    const level=XCPCPreferences.cfLevel(user.rating);
+    const label=level==='legendary'?`<span class="cf-first">${esc(handle.slice(0,1))}</span>${esc(handle.slice(1))}`:esc(handle);
+    const rating=Number.isFinite(user.rating)?String(user.rating):user.error||(user.updated_at?'未评级':'待同步');
+    const detail=binding.member+' · '+rating+(user.stale&&user.updated_at?' · 缓存，等待更新':'')+(user.updated_at?' · 更新于 '+date(user.updated_at):'');
+    return `<div class="cf-entry" title="${esc(detail)}"><a class="cf-handle cf-${level}" href="https://codeforces.com/profile/${encodeURIComponent(handle)}" target="_blank" rel="noopener noreferrer">${label}</a><small>${esc(binding.member)} · ${esc(rating)}${user.stale&&user.updated_at?' ↻':''}</small></div>`;
+  }).join('');
+  return `<td class="cf-cell">${entries||'<span class="cf-empty">—</span>'}${S.token&&board()?`<button class="cf-edit" data-cf="${esc(team.id)}" aria-label="绑定 ${esc(team.name)} 的 CF 账号">${bindings.length?'编辑':'＋ 绑定账号'}</button>`:''}</td>`;
+}
+
+function editCf(tid) {
+  if(!S.token){login(()=>editCf(tid));return;}
+  const team=board()?.teams.find(t=>t.id===tid);if(!team)return;
+  const sid=S.active,source=S.source,bindings=station().cf_bindings?.[tid]||[];
+  const roster=team.members||[];
+  const row=(i)=>{
+    const binding=bindings[i]||{};
+    return `<div class="form-row cf-binding-row"><label class="field">队员 ${i+1}${roster.length?`<select data-cf-member><option value="">选择队员</option>${roster.map(m=>`<option value="${esc(m)}" ${m===binding.member?'selected':''}>${esc(m)}</option>`).join('')}</select>`:`<input data-cf-member value="${esc(binding.member||'')}" maxlength="80" placeholder="队员姓名">`}</label><label class="field">CF 账号<input data-cf-handle value="${esc(binding.handle||'')}" maxlength="24" placeholder="例如 tourist" autocomplete="off" autocapitalize="off" spellcheck="false"></label></div>`;
+  };
+  openModal('绑定队员的 CF 账号','CODEFORCES',`<form id="cfForm" class="form-stack"><div class="help">${esc(team.name)} · ${esc(team.organization)}<br>每位队员一个账号，每队最多三个。绑定对所有访客可见；清空一行可移除绑定。</div>${[0,1,2].map(row).join('')}<p class="help">颜色按当前 CF rating 显示，每小时自动更新；点击账号可打开 CF 主页。</p><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button type="submit" class="primary">保存绑定</button></div></form>`);
+  $('cfForm').onsubmit=async e=>{
+    e.preventDefault();const button=e.submitter;button.disabled=true;
+    try {
+      if(sid!==S.active||source!==S.source)throw Error('榜单已切换，请重新打开绑定');
+      const members=[...$('cfForm').querySelectorAll('.cf-binding-row')].map(row=>({member:row.querySelector('[data-cf-member]').value.trim(),handle:row.querySelector('[data-cf-handle]').value.trim()})).filter(b=>b.member||b.handle);
+      await adminSave({source,cf_binding:{team:tid,members}},sid);closeModal();renderTable();toast('CF 绑定已保存，rating 将自动同步');
+    }catch(error){errorMessage(error);}finally{button.disabled=false;}
+  };
+}
 
 async function refreshCatalog() {
   const result=await api('/api/contests'); S.stations=result.contests;
@@ -269,12 +303,13 @@ function renderTable() {
   wrap.classList.toggle('many-problems',manyProblems);
   wrap.closest('.workspace').classList.toggle('many-problems',manyProblems);
   $('showSeat').checked=S.showSeat;
+  $('showCf').checked=S.showCf;
   if(!b) {
     if(s?.preference_preview) {
       const teams=s.preference_preview.teams,rows=teams.filter(t=>inView(t)&&matches(t));
       $('teamCount').textContent=rows.length+' / '+teams.length;
       $('viewInfo').textContent=(S.view==='all'?'全部队伍':S.view==='stars'?'我的关注':currentGroup()?.name||'')+' · 热身赛名单 · 等待正式赛数据';
-      wrap.innerHTML=`<div class="cache-notice">以下为已保留的热身赛队伍、关注和备注。正式赛名单公布后会自动匹配导入。</div><table><thead><tr><th class="star-col"></th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th></tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell">${stars().includes(t.id)?'★':''}</td><td class="note-cell">${esc(note(t)||'—')}</td>${S.showSeat?`<td class="seat-cell">${esc(t.location)}</td>`:''}<td class="team-cell"><div class="team-name">${esc(t.name)}</div><div class="organization">${esc(t.organization)}</div></td></tr>`).join('')||`<tr><td colspan="${3+Number(S.showSeat)}"><div class="empty">没有找到匹配队伍</div></td></tr>`}</tbody></table>`;
+      wrap.innerHTML=`<div class="cache-notice">以下为已保留的热身赛队伍、关注和备注。正式赛名单公布后会自动匹配导入。</div><table><thead><tr><th class="star-col"></th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th>${S.showCf?'<th class="cf-col">CF 账号<small>队员 · 当前 rating</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell">${stars().includes(t.id)?'★':''}</td><td class="note-cell">${esc(note(t)||'—')}</td>${S.showSeat?`<td class="seat-cell">${esc(t.location)}</td>`:''}<td class="team-cell"><div class="team-name">${esc(t.name)}</div><div class="organization">${esc(t.organization)}</div></td>${cfCell(t)}</tr>`).join('')||`<tr><td colspan="${3+Number(S.showSeat)+Number(S.showCf)}"><div class="empty">没有找到匹配队伍</div></td></tr>`}</tbody></table>`;
       return;
     }
     $('teamCount').textContent='—';
@@ -287,7 +322,7 @@ function renderTable() {
   const hidden=!!b.problem_reveal?.hidden;
   const revealHint=hidden?` · 满 ${b.problem_reveal.threshold} 队通过后揭晓题号；右侧未揭晓题目仅在队内排列`:'';
   $('viewInfo').textContent+=revealHint;
-  wrap.innerHTML=`<table><thead><tr><th class="star-col"></th><th class="rank-col">排名</th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th><th class="solved-col">AC</th><th class="penalty-col">罚时</th>${b.problems.map(p=>`<th><span class="prob-label" style="background:${safeColor(p.color)}">${esc(p.label)}</span><small>${eligible.filter(t=>t.problems[b.problems.indexOf(p)].state==='ac').length} AC</small></th>`).join('')}${hidden?'<th class="hidden-heading">未揭晓题目<small>队内排列 · 无题号</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell"><button class="star ${stars().includes(t.id)?'on':''}" data-star="${esc(t.id)}" title="${stars().includes(t.id)?'取消关注':'加入我的关注'}" aria-label="${stars().includes(t.id)?'取消关注':'关注'} ${esc(t.name)}">${stars().includes(t.id)?'★':'☆'}</button></td><td class="rank">${rankBadge(t)}</td><td class="note-cell"><button class="note-button ${note(t)?'':'blank'}" data-note="${esc(t.id)}" title="编辑群友备注">${note(t)?esc(note(t)):'＋ 添加备注'}</button></td>${S.showSeat?`<td class="seat-cell">${esc(t.location || '—')}</td>`:''}<td class="team-cell" title="${esc(t.id+' · '+t.name+' · '+t.members.join(' / '))}"><div class="team-name">${esc(t.name)}${t.groups.includes('unofficial')?'<span class="unofficial">打星</span>':''}</div><div class="organization">${esc(t.organization || t.location || t.id)}</div></td><td class="solved">${t.solved}</td><td class="penalty">${minute(t.penalty)}</td>${t.problems.map((p,i)=>`<td class="prob-cell">${problemCell(p,t,b.problems[i].label)}</td>`).join('')}${hidden?`<td class="hidden-cell"><div class="hidden-problems">${(t.hidden_problems||[]).map(p=>problemCell(p,t,'未揭晓题目')).join('')||'<span class="help">尚无提交</span>'}</div></td>`:''}</tr>`).join('') || `<tr><td colspan="${6+Number(S.showSeat)+b.problems.length+Number(hidden)}"><div class="empty"><h3>${S.query?'没有找到匹配队伍':S.view==='stars'?'还没有关注的队伍':'这个分组还没有队伍'}</h3><p>${S.query?'试试队名、学校或群友备注。':S.view==='stars'?'批量勾选队伍，或从已有分组添加到我的关注。':'在全部队伍中点 ☆，或使用「关注分组」挑选队伍。'}</p>${S.view==='stars'?'<button class="primary" data-action="pick-stars">勾选导入队伍</button>':''}</div></td></tr>`}</tbody></table>`;
+  wrap.innerHTML=`<table><thead><tr><th class="star-col"></th><th class="rank-col">排名</th><th class="note-col">群友备注</th>${S.showSeat?'<th class="seat-col">座位号</th>':''}<th class="team-col">队伍 / 学校</th>${S.showCf?'<th class="cf-col">CF 账号<small>队员 · 当前 rating</small></th>':''}<th class="solved-col">AC</th><th class="penalty-col">罚时</th>${b.problems.map(p=>`<th><span class="prob-label" style="background:${safeColor(p.color)}">${esc(p.label)}</span><small>${eligible.filter(t=>t.problems[b.problems.indexOf(p)].state==='ac').length} AC</small></th>`).join('')}${hidden?'<th class="hidden-heading">未揭晓题目<small>队内排列 · 无题号</small></th>':''}</tr></thead><tbody>${rows.map(t=>`<tr data-team="${esc(t.id)}" class="${stars().includes(t.id)?'followed':''}"><td class="star-cell"><button class="star ${stars().includes(t.id)?'on':''}" data-star="${esc(t.id)}" title="${stars().includes(t.id)?'取消关注':'加入我的关注'}" aria-label="${stars().includes(t.id)?'取消关注':'关注'} ${esc(t.name)}">${stars().includes(t.id)?'★':'☆'}</button></td><td class="rank">${rankBadge(t)}</td><td class="note-cell"><button class="note-button ${note(t)?'':'blank'}" data-note="${esc(t.id)}" title="编辑群友备注">${note(t)?esc(note(t)):'＋ 添加备注'}</button></td>${S.showSeat?`<td class="seat-cell">${esc(t.location || '—')}</td>`:''}<td class="team-cell" title="${esc(t.id+' · '+t.name+' · '+t.members.join(' / '))}"><div class="team-name">${esc(t.name)}${t.groups.includes('unofficial')?'<span class="unofficial">打星</span>':''}</div><div class="organization">${esc(t.organization || t.location || t.id)}</div></td>${cfCell(t)}<td class="solved">${t.solved}</td><td class="penalty">${minute(t.penalty)}</td>${t.problems.map((p,i)=>`<td class="prob-cell">${problemCell(p,t,b.problems[i].label)}</td>`).join('')}${hidden?`<td class="hidden-cell"><div class="hidden-problems">${(t.hidden_problems||[]).map(p=>problemCell(p,t,'未揭晓题目')).join('')||'<span class="help">尚无提交</span>'}</div></td>`:''}</tr>`).join('') || `<tr><td colspan="${6+Number(S.showSeat)+Number(S.showCf)+b.problems.length+Number(hidden)}"><div class="empty"><h3>${S.query?'没有找到匹配队伍':S.view==='stars'?'还没有关注的队伍':'这个分组还没有队伍'}</h3><p>${S.query?'试试队名、学校或群友备注。':S.view==='stars'?'批量勾选队伍，或从已有分组添加到我的关注。':'在全部队伍中点 ☆，或使用「关注分组」挑选队伍。'}</p>${S.view==='stars'?'<button class="primary" data-action="pick-stars">勾选导入队伍</button>':''}</div></td></tr>`}</tbody></table>`;
 }
 function statusClass(status) {return status==='AC'?'ac':['FROZEN','PENDING'].includes(status)?'pending':['WA','RE','TLE','MLE','OLE','RJ','JE'].includes(status)?'wa':'neutral';}
 function renderQueue(animated=false,newId='') {
@@ -378,7 +413,7 @@ function revealBoard(sid=S.active,source=S.source) {
 function login(after=settings) {
   if(S.token){after();return;}
   openModal('进入赛站管理','ADMIN ACCESS',`<form id="loginForm" class="form-stack"><div class="help">使用服务器上的管理密钥，配置所有访客可见的榜单、直播或视频、公共分组和备注。</div><label class="field">管理密钥<input type="password" id="adminToken" autocomplete="current-password" required autofocus></label><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">进入管理</button></div></form>`);
-  $('loginForm').onsubmit=async e=>{e.preventDefault();S.token=$('adminToken').value.trim();try{await api('/api/admin/session',null,true);save(sessionStorage,'xcpc-admin',S.token);after();renderStatus();}catch(error){errorMessage(error);}};
+  $('loginForm').onsubmit=async e=>{e.preventDefault();S.token=$('adminToken').value.trim();try{await api('/api/admin/session',null,true);save(sessionStorage,'xcpc-admin',S.token);after();renderStatus();renderTable();}catch(error){errorMessage(error);}};
 }
 function settings(newStation=false) {
   if(!S.token){login(()=>settings(newStation));return;}
@@ -411,15 +446,54 @@ function groups() {
   if(!board()){toast('榜单加载后可创建关注分组');return;}
   const pub=station().public_groups||[],local=S.local.groups||[];
   const item=(g,scope)=>`<div class="group-item"><strong>${esc(g.name)}</strong><small>${g.teams.length} 支队伍${scope==='public'&&station().default_group===g.id?' · 公共默认':''}</small><button data-group-edit="${esc(g.id)}" data-scope="${scope}">编辑</button><button data-group-delete="${esc(g.id)}" data-scope="${scope}" class="danger">删除</button></div>`;
-  openModal('把熟悉的队伍聚在一起','FOLLOW YOUR TEAMS',`<div class="help">个人分组只保存在当前浏览器；公共分组由管理员维护，所有访客都能选择。</div><div class="group-heading"><h3>我的分组 · 当前浏览器</h3><button data-group-add="local">＋ 新建分组</button></div><div class="group-list">${local.map(g=>item(g,'local')).join('')||'<p class="help">还没有个人分组。也可以直接在榜单点 ☆ 使用「我的关注」。</p>'}</div><div class="group-heading"><h3>公共视图 · 所有人可见</h3><button data-group-add="public">${S.token?'＋ 新建公共分组':'管理员登录'}</button></div><div class="group-list">${pub.map(g=>`<div class="group-item"><strong>${esc(g.name)}</strong><small>${g.teams.length} 支队伍${station().default_group===g.id?' · 默认视图':''}</small><button data-group-view="${esc(g.id)}">查看</button>${S.token?`<button data-group-edit="${esc(g.id)}" data-scope="public">编辑</button><button data-group-delete="${esc(g.id)}" data-scope="public" class="danger">删除</button>`:''}</div>`).join('')||'<p class="help">暂时没有公共分组。</p>'}</div>${S.token?'<div class="modal-actions"><button id="resetPublicDefault">恢复全部队伍为公共默认视图</button></div>':''}`);
+  openModal('把熟悉的队伍聚在一起','FOLLOW YOUR TEAMS',`<div class="help">个人分组只保存在当前浏览器；公共分组由管理员维护，所有访客都能选择。</div><div class="group-heading"><h3>我的分组 · 当前浏览器</h3><button data-group-add="local">＋ 新建分组</button></div><div class="group-list">${local.map(g=>item(g,'local')).join('')||'<p class="help">还没有个人分组。也可以直接在榜单点 ☆ 使用「我的关注」。</p>'}</div><div class="group-heading"><h3>公共视图 · 所有人可见</h3><button data-group-add="public">${S.token?'＋ 新建公共分组':'管理员登录'}</button></div><div class="group-list">${pub.map(g=>`<div class="group-item"><strong>${esc(g.name)}</strong><small>${g.teams.length} 支队伍${station().default_group===g.id?' · 默认视图':''}</small><button data-group-view="${esc(g.id)}">查看</button>${S.token?`<button data-group-edit="${esc(g.id)}" data-scope="public">编辑</button><button data-group-delete="${esc(g.id)}" data-scope="public" class="danger">删除</button>`:''}</div>`).join('')||'<p class="help">暂时没有公共分组。</p>'}</div>${S.token?'<div class="modal-actions"><button id="importPublic">导入往期公共分组与备注</button><button id="resetPublicDefault">恢复全部队伍为公共默认视图</button></div>':''}`);
   $('modalBody').onclick=async e=>{
     const el=e.target.closest('button');if(!el)return;
     if(el.dataset.groupAdd){if(el.dataset.groupAdd==='public'&&!S.token){login(()=>editGroup('public'));return;}editGroup(el.dataset.groupAdd);}
     if(el.dataset.groupEdit)editGroup(el.dataset.scope,el.dataset.groupEdit);
     if(el.dataset.groupView){S.view='pub:'+el.dataset.groupView;persist();closeModal();renderViews();renderTable();renderQueue();}
     if(el.dataset.groupDelete)deleteGroup(el.dataset.scope,el.dataset.groupDelete);
+    if(el.id==='importPublic')importPublic();
     if(el.id==='resetPublicDefault'){try{await adminSave({source:S.source,default_group:'all'});groups();toast('公共默认视图已恢复为全部队伍');}catch(error){toast(error.message);}}
   };
+}
+function importPublic() {
+  if(!S.token){login(importPublic);return;}
+  if(!board())return;
+  const sid=S.active,source=S.source;
+  const sources=S.stations.filter(s=>s.id!==sid&&s.public_groups?.length);
+  const past=sources.filter(s=>s.archived), names=[...new Set(sources.flatMap(s=>s.public_groups.map(g=>g.name)))];
+  if(!sources.length){toast('其他赛站还没有公共分组');return;}
+  openModal('导入公共分组与备注','IMPORT PUBLIC GROUPS',`<form id="publicImportForm" class="form-stack"><label class="field">来源赛事<select id="publicImportSource">${past.length?'<option value="past">所有往期赛事 · 优先使用较新的备注</option>':''}${sources.map(s=>`<option value="${esc(s.id)}">${esc(s.title)}</option>`).join('')}</select></label><div class="field">导入分组<div class="import-group-options">${names.map((n,i)=>`<label class="check-field"><input type="checkbox" name="import-group" value="${esc(n)}" ${['群友','赛博大战'].includes(n)||names.length===1?'checked':''}>${esc(n)}</label>`).join('')}</div></div><p class="help">按唯一的同名同校队伍或完整队员名单匹配；已有分组会合并，现有备注和 CF 绑定优先保留。重名或名单不符的队伍跳过。</p><div id="publicImportPreview" class="import-preview" aria-live="polite"></div><div id="formError" class="form-error"></div><div class="modal-actions"><button type="button" data-close>取消</button><button type="submit" id="applyPublicImport" class="primary" disabled>确认导入</button></div></form>`);
+  let sequence=0,request=null;
+  const preview=async()=>{
+    const form=$('publicImportForm'),seq=++sequence;
+    const selected=$('publicImportSource').value==='past'?past:sources.filter(s=>s.id===$('publicImportSource').value);
+    const groups=[...form.querySelectorAll('[name="import-group"]:checked')].map(n=>n.value);
+    request=null;$('applyPublicImport').disabled=true;$('formError').textContent='';
+    if(!groups.length){$('publicImportPreview').textContent='请选择至少一个分组';return;}
+    const draft={source,sources:selected.map(s=>({id:s.id,source:s.source})),groups};
+    $('publicImportPreview').textContent='正在匹配名单…';
+    try {
+      const result=await api('/api/admin/contests/'+sid+'/import',draft,true);
+      if(seq!==sequence||$('publicImportForm')!==form)return;
+      const plan=result.plan,r=plan.report,unique=new Set(r.matches.map(m=>m.id));request=draft;
+      $('publicImportPreview').innerHTML=`<p><strong>匹配 ${unique.size} 支队伍 · 新增 ${r.notes_added} 条备注 · ${r.bindings_added} 个 CF 绑定</strong></p><p class="help">未匹配 ${r.unmatched} 条 · 重名待核对 ${r.ambiguous} 条 · 保留已有备注 ${r.conflicts.length} 条</p><div class="import-match-list">${r.matches.map(m=>`<div><strong>${esc(m.name)}</strong><small>${esc(m.source)} · ${esc(m.previous_name)}${m.note?' · '+esc(m.note):''}</small></div>`).join('')||'<p class="help">没有匹配队伍，将只创建所选的空分组。</p>'}</div>`;
+      $('applyPublicImport').disabled=false;
+    }catch(error){if(seq===sequence&&$('publicImportForm')===form){$('publicImportPreview').textContent='';errorMessage(error);}}
+  };
+  $('publicImportForm').onchange=preview;
+  $('publicImportForm').onsubmit=async e=>{
+    e.preventDefault();if(!request)return;
+    const button=$('applyPublicImport');button.disabled=true;
+    try {
+      if(sid!==S.active||source!==S.source)throw Error('榜单已切换，请重新预览导入');
+      const result=await api('/api/admin/contests/'+sid+'/import',{...request,apply:true},true);
+      if(sid===S.active&&S.data)S.data.station=result.station;
+      await refreshCatalog();closeModal();render();toast('公共分组、备注和已核实的 CF 绑定已导入');
+    }catch(error){errorMessage(error);}finally{button.disabled=false;}
+  };
+  preview();
 }
 function importStars() {
   if(!board() || !S.local){toast('榜单加载后可导入关注');return;}
@@ -532,6 +606,7 @@ $('viewTabs').onclick=e=>{const b=e.target.closest('[data-view]');if(!b)return;S
 $('search').oninput=e=>{S.query=e.target.value.trim();renderTable();};
 $('rankGroup').onchange=e=>{S.rankGroup=e.target.value;persist();renderTable();renderQueue();};
 $('showSeat').onchange=e=>{S.showSeat=e.target.checked;save(localStorage,'xcpc-show-seat',S.showSeat);renderTable();};
+$('showCf').onchange=e=>{S.showCf=e.target.checked;save(localStorage,'xcpc-show-cf',S.showCf);renderTable();};
 $('queueOnlyView').onchange=e=>{S.queueOnly=e.target.checked;persist();renderQueue();};
 $('queuePause').onclick=()=>{S.paused=!S.paused;renderQueue();if(!S.paused)drainQueue();};
 $('manageButton').onclick=()=>login();$('groupButton').onclick=groups;$('followButton').onclick=()=>editGroup('stars');$('importButton').onclick=importStars;
@@ -552,6 +627,7 @@ document.addEventListener('click',e=>{
   const star=e.target.closest('[data-star]');
   if(star&&S.local){const id=star.dataset.star;S.local.stars=stars().includes(id)?stars().filter(x=>x!==id):[...stars(),id];persist();renderViews();renderTable();if(S.queueOnly)renderQueue();}
   const n=e.target.closest('[data-note]');if(n)editNote(n.dataset.note);
+  const cf=e.target.closest('[data-cf]');if(cf)editCf(cf.dataset.cf);
   const cell=e.target.closest('[data-history]');if(cell)showSubmissions(cell.dataset.historyTeam,cell.dataset.history);
 });
 document.addEventListener('keydown',e=>{if(e.key==='/'&&!$('modal').open&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();$('search').focus();}});

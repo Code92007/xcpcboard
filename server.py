@@ -20,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit, unquote, urlencode
 from urllib.request import Request, build_opener, HTTPRedirectHandler
+from codeforces import Ratings, clean_bindings
+from public_import import plan_import
 
 ROOT = Path(__file__).resolve().parent
 POLL = max(10, int(os.getenv('POLL_SECONDS', '15')))
@@ -157,12 +159,33 @@ def matching_teams(old, new):
     return result
 
 
-def merge_public_profile(target, previous, team_map):
+def raw_member_map(raw):
+    result = {}
+    for team in entries(raw['teams']):
+        if raw.get('provider') == 'iccpc':
+            tid, members = iccpc_team_id(team['id']), str(team.get('tmember') or '').split('、')
+        else:
+            tid, members = str(team['id']), team.get('members') or []
+            if isinstance(members, str):
+                members = [members]
+            members = [localized(m.get('name') if isinstance(m, dict) else m) for m in members]
+        result[tid] = [m for m in members if m]
+    return result
+
+
+def merge_public_profile(target, previous, team_map, members=None):
     """Keep current edits and merge verified members into existing named groups."""
     notes = target.setdefault('notes', {})
     for tid, note in previous.get('notes', {}).items():
         if tid in team_map:
             notes.setdefault(team_map[tid], note)
+    bindings = target.setdefault('cf_bindings', {})
+    for tid, accounts in previous.get('cf_bindings', {}).items():
+        if tid in team_map:
+            roster = (members or {}).get(team_map[tid], [])
+            verified = [b for b in accounts if not roster or b['member'] in roster]
+            if verified:
+                bindings.setdefault(team_map[tid], copy.deepcopy(verified))
     groups = target.setdefault('public_groups', [])
     group_map = {}
     for old in previous.get('public_groups', []):
@@ -595,6 +618,7 @@ class Store:
         self.preference_cache = {}
         self.health = {}
         self.fetcher = Fetcher()
+        self.ratings = Ratings(self.directory)
         self.wakeup = threading.Event()
         self.config_path = self.directory / 'config.json'
         if self.config_path.exists():
@@ -685,9 +709,9 @@ class Store:
                 target = profiles.setdefault(source_key(path), {})
                 for link in links:
                     previous = profiles.get(link['source'], {})
-                    if link['source'] in target.get('inherited_sources', []) or not (previous.get('notes') or previous.get('public_groups')):
+                    if link['source'] in target.get('inherited_sources', []) or not (previous.get('notes') or previous.get('public_groups') or previous.get('cf_bindings')):
                         continue
-                    merge_public_profile(target, previous, link['team_map'])
+                    merge_public_profile(target, previous, link['team_map'], raw_member_map(self.raw[source_key(path)]))
                     target.setdefault('inherited_sources', []).append(link['source'])
                     changed = True
             if changed:
@@ -737,6 +761,8 @@ class Store:
                 'archive_mode': archive_mode, 'archived': archived,
                 'preference_sources': links, 'preference_preview': preview,
                 'upstream_group': group, 'notes': profile.get('notes', {}),
+                'cf_bindings': profile.get('cf_bindings', {}),
+                'cf_users': self.ratings.snapshot(b['handle'] for members in profile.get('cf_bindings', {}).values() for b in members),
                 'public_groups': profile.get('public_groups', []), 'default_group': profile.get('default_group', 'all')}
 
     def stations(self):
@@ -805,10 +831,25 @@ class Store:
                 raise ValueError('榜单已切换，请刷新后揭榜')
             if previous_path and path != previous_path:
                 station['reveal'] = False
-            if any(k in data for k in ['notes', 'public_groups', 'default_group']):
+            if any(k in data for k in ['notes', 'public_groups', 'default_group', 'cf_bindings', 'cf_binding']):
                 if data.get('source') != key:
                     raise ValueError('榜单已切换，请刷新后编辑分组和备注')
                 profile = station['profiles'].setdefault(key, {})
+                if 'cf_bindings' in data or 'cf_binding' in data:
+                    raw = self.raw.get(key)
+                    if not raw:
+                        raise ValueError('榜单名单加载后才能绑定 CF 账号')
+                    teams = build_board(raw, station)['teams']
+                    if 'cf_bindings' in data:
+                        profile['cf_bindings'] = clean_bindings(data['cf_bindings'], teams)
+                    if 'cf_binding' in data:
+                        binding = data['cf_binding']
+                        if not isinstance(binding, dict) or not isinstance(binding.get('team'), str):
+                            raise ValueError('CF 绑定格式错误')
+                        tid = binding['team']
+                        clean = clean_bindings({tid:binding.get('members')}, teams)
+                        profile.setdefault('cf_bindings', {}).pop(tid, None)
+                        profile['cf_bindings'].update(clean)
                 if 'notes' in data:
                     if not isinstance(data['notes'], dict) or len(data['notes']) > 5000:
                         raise ValueError('备注格式错误')
@@ -839,6 +880,46 @@ class Store:
             self.inherit_preferences(path)
         self.wakeup.set()
         return self.public_station(self.station(sid))
+
+    def cf_handles(self):
+        with self.lock:
+            return list(dict.fromkeys(b['handle'] for s in self.config['contests'] for p in s.get('profiles', {}).values()
+                                      for members in p.get('cf_bindings', {}).values() for b in members))
+
+    def import_public(self, sid, data):
+        with self.lock:
+            target = self.board(sid)
+            if data.get('source') != target['station']['source']:
+                raise ValueError('目标榜单已切换，请重新预览导入')
+            if not target['board']:
+                raise ValueError('目标榜单名单尚未加载')
+            requests, names = data.get('sources'), data.get('groups')
+            if not isinstance(requests, list) or not 1 <= len(requests) <= 20 or not all(isinstance(r, dict) for r in requests):
+                raise ValueError('请选择要导入的赛事')
+            if not isinstance(names, list) or not 1 <= len(names) <= 50 or not all(isinstance(n, str) for n in names):
+                raise ValueError('请选择要导入的分组')
+            if type(data.get('apply', False)) is not bool:
+                raise ValueError('导入选项格式错误')
+            requested = {r.get('id'): r.get('source') for r in requests}
+            if sid in requested or len(requested) != len(requests):
+                raise ValueError('不能从当前赛事或重复赛事导入')
+            sources = []
+            for station in self.stations():
+                if station['id'] not in requested:
+                    continue
+                if station['source'] != requested[station['id']]:
+                    raise ValueError('来源榜单已切换，请重新预览导入')
+                source = self.board(station['id'])
+                if not source['board']:
+                    raise ValueError('来源榜单名单尚未加载：' + station['title'])
+                sources.append(source)
+            if len(sources) != len(requested):
+                raise ValueError('来源赛事不存在')
+            plan = plan_import(target, sources, names)
+            result = dict(plan=plan, applied=data.get('apply', False))
+            if result['applied']:
+                result['station'] = self.update(sid, dict(source=data['source'], **{k:plan[k] for k in ['notes', 'public_groups', 'cf_bindings']}))
+            return result
 
     def refresh(self, station):
         path = board_source(station['board_url'])[0]
@@ -1041,7 +1122,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = urlsplit(self.path).path
-        if not re.fullmatch(r'/api/admin/contests/[a-z0-9-]+', path):
+        if not re.fullmatch(r'/api/admin/contests/[a-z0-9-]+(?:/import)?', path):
             self.send(404, {'error': 'Not found'})
             return
         if not self.authorized():
@@ -1058,7 +1139,12 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise ValueError('配置内容格式不正确')
-            self.send(200, self.server.store.update(path.split('/')[-1], data))
+            if path.endswith('/import'):
+                self.send(200, self.server.store.import_public(path.split('/')[-2], data))
+            else:
+                self.send(200, self.server.store.update(path.split('/')[-1], data))
+        except StopIteration:
+            self.send(404, {'error': '赛站不存在'})
         except (ValueError, KeyError, TypeError) as exc:
             self.send(400, {'error': str(exc)[:240]})
         except OSError:
@@ -1079,6 +1165,7 @@ def main():
     server = BoardHTTPServer((os.getenv('BIND', '127.0.0.1'), int(os.getenv('PORT', '8766'))), Handler)
     server.store, server.token = store, token
     threading.Thread(target=store.worker, daemon=True).start()
+    threading.Thread(target=store.ratings.worker, args=(store.cf_handles,), daemon=True).start()
     LOG.info('Listening on %s:%s; cache %s', *server.server_address, store.directory)
     server.serve_forever()
 
