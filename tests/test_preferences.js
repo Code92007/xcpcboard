@@ -1,6 +1,15 @@
 'use strict';
 const assert = require('node:assert/strict');
-const {load, matchStars, cfLevel} = require('../static/preferences.js');
+const {load, matchStars, cfLevel, displayNote} = require('../static/preferences.js');
+const roster=['杜瑜皓','蒋凌宇','许淇文'];
+const original='蒋凌宇/杜瑜皓/许淇文';
+assert.equal(displayNote(original,roster), '');
+assert.equal(displayNote(original,roster,true), original);
+assert.equal(displayNote('杜瑜皓/EvenImage+蒋凌宇/jiangly',roster), 'EvenImage+jiangly');
+assert.equal(displayNote('Zheng_iii/chennie',['陈聂','郑岩泽']), 'Zheng_iii/chennie');
+assert.equal(displayNote('<小羊肖恩>', ['杨潇']), '<小羊肖恩>');
+assert.equal(displayNote('/原样备注/', ['杨潇']), '/原样备注/');
+assert.equal(displayNote('甲乙丙+甲乙',['甲乙','甲乙丙']), '');
 for (const [rating, expected] of [[null,'unrated'],[undefined,'unrated'],[0,'newbie'],[1199,'newbie'],[1200,'pupil'],[1399,'pupil'],[1400,'specialist'],[1600,'expert'],[1900,'candidate-master'],[2100,'master'],[2399,'master'],[2400,'grandmaster'],[2999,'grandmaster'],[3000,'legendary']]) assert.equal(cfLevel(rating), expected);
 const values = new Map();
 const storage = {getItem:k => values.get(k) ?? null, setItem:(k,v) => values.set(k,v)};

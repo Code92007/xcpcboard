@@ -14,6 +14,22 @@ import server
 
 
 class CodeforcesTests(unittest.TestCase):
+    def test_member_name_visibility_defaults_off_and_admin_setting_persists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = server.Store(directory)
+            self.assertFalse(store.public_station(store.station('nanjing'))['show_member_names'])
+            self.assertTrue(store.update('nanjing', dict(show_member_names=True))['show_member_names'])
+            restored = server.Store(directory)
+            self.assertTrue(restored.public_station(restored.station('nanjing'))['show_member_names'])
+            self.assertFalse(restored.public_station(restored.station('leshan'))['show_member_names'])
+            before = restored.config_path.read_bytes()
+            for invalid in [1, 'true', None, [], {}]:
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    restored.update('nanjing', dict(title='不应保存', show_member_names=invalid))
+                self.assertEqual(restored.config_path.read_bytes(), before)
+            restored.update('nanjing', dict(show_member_names=False))
+            self.assertFalse(server.Store(directory).public_station(restored.station('nanjing'))['show_member_names'])
+
     def test_warmup_binding_inheritance_checks_formal_team_members(self):
         target = {}
         old = dict(cf_bindings={'old':[dict(member='甲', handle='first'), dict(member='乙', handle='second'), dict(member='甲', handle='alternate')]})

@@ -768,6 +768,7 @@ class Store:
         return {**{k: v for k, v in station.items() if k != 'profiles'}, 'source': source_key(path), 'media': station_media(station),
                 'pinned': station.get('pinned', station['id'] == 'wuhan'), 'start_time': start, 'end_time': end,
                 'archive_mode': archive_mode, 'archived': archived,
+                'show_member_names': station.get('show_member_names') is True,
                 'preference_sources': links, 'preference_preview': preview,
                 'upstream_group': group, 'notes': profile.get('notes', {}),
                 'cf_bindings': profile.get('cf_bindings', {}),
@@ -803,6 +804,10 @@ class Store:
                 if not isinstance(data['pinned'], bool):
                     raise ValueError('置顶选项格式错误')
                 station['pinned'] = data['pinned']
+            if 'show_member_names' in data:
+                if type(data['show_member_names']) is not bool:
+                    raise ValueError('姓名显示选项格式错误')
+                station['show_member_names'] = data['show_member_names']
             if 'archive_mode' in data:
                 if data['archive_mode'] not in ('auto', 'current', 'past'):
                     raise ValueError('请选择自动归档、保留在当前赛事或收入往期赛事')

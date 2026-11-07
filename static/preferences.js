@@ -88,7 +88,15 @@
     if (rating < 3000) return 'grandmaster';
     return 'legendary';
   }
-  const api = {load, matchStars, cfLevel};
+  function displayNote(note, members, showNames=false) {
+    if (showNames) return note;
+    const names = [...new Set(members.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim()))].sort((a,b)=>b.length-a.length);
+    let visible = note;
+    for (const name of names) visible = visible.split(name).join('');
+    if (visible === note) return note;
+    return visible.replace(/^[\s/、,，+＋·|]+|[\s/、,，+＋·|]+$/g,'').replace(/([/、,，+＋·|])(?:\s*[/、,，+＋·|])+/g,'$1').trim();
+  }
+  const api = {load, matchStars, cfLevel, displayNote};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.XCPCPreferences = api;
 })(globalThis);
